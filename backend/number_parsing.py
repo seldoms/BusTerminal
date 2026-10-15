@@ -1,0 +1,764 @@
+# -*- coding: utf-8 -*-
+# SPDX-License-Identifier: GPL-3.0-only
+# 移植自 amane (https://github.com/sqzw-x/amane)，原作者 sqzw-x
+# 源文件：src/amane/parsing/file_info.py（番号/文件名解析主体）
+# 　　　　src/amane/crawlers/parsing.py（番号比对函数：fold_number / is_same_number /
+# 　　　　parse_western_number / normalize_name 等）
+# 　　　　src/amane/utils/dates.py（内联最小片段 _valid_ymd，供 parse_western_number 校验日期）
+"""从路径或自由文本解析番号、内容类型, 以及文件相位标记.
+
+``parse_file_info``: 有路径则解析路径 (目录段可补番号、关键词可覆盖类型);
+只有字符串则按自由文本 (RSS 标题、已有番号), 未命中则 ``number is None``, 不能把原文冒充番号.
+常用字段投影是同一函数的包装.
+
+文件相位 (cd / 中字 / 马赛克 / 分辨率) 与类型正交: cd / 中字 / 分辨率只依据文件名; 马赛克依据文件名与目录整段词表, 未命中时再依据番号分类 (有码类型为 censored, 无码类型为 uncensored; 其它类型为空).
+"""
+
+from __future__ import annotations
+
+import calendar
+import contextlib
+import re
+import unicodedata
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+from typing import TypedDict
+
+# ---------------------------------------------------------------------------
+# Types
+# ---------------------------------------------------------------------------
+
+try:  # Python 3.11+
+    from enum import StrEnum
+except ImportError:  # 生产镜像底座是 python:3.10-slim，没有 enum.StrEnum
+    class StrEnum(str, Enum):  # type: ignore[no-redef]
+        """3.10 兼容版：str() 返回 value，与 3.11 的 enum.StrEnum 行为一致。"""
+
+        def __str__(self) -> str:
+            return str(self.value)
+
+
+class ContentType(StrEnum):
+    CENSORED = "censored"
+    UNCENSORED = "uncensored"
+    CHINESE = "chinese"
+    WESTERN = "western"
+    FC2 = "fc2"
+    AMATEUR = "amateur"
+    HENTAI = "hentai"
+
+
+class Mosaic(StrEnum):
+    CENSORED = "censored"
+    UNCENSORED = "uncensored"
+    CRACKED = "cracked"
+    LEAKED = "leaked"
+
+
+@dataclass(frozen=True)
+class FileInfo:
+    number: str | None
+    content_type: ContentType
+    prefix: str
+    cd: int | None = None
+    has_subtitle: bool = False
+    mosaic: Mosaic | None = None
+    definition: str | None = None
+
+
+class FilePhase(TypedDict):
+    """MediaFile 上持久化的文件相位 (path 的投影, 不含 number/cd)."""
+
+    content_type: ContentType
+    mosaic: Mosaic | None
+    has_subtitle: bool
+    definition: str | None
+
+
+@dataclass(frozen=True)
+class FilePhaseSummary:
+    """多文件相位聚合: 任一文件具备某性质即为真; definition 取最高档."""
+
+    has_subtitle: bool = False
+    uncensored: bool = False
+    mosaics: tuple[Mosaic, ...] = ()
+    definition: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+_UNCENSORED_PREFIXES = (
+    "BT-",
+    "CT-",
+    "EMP-",
+    "CCDV-",
+    "CWP-",
+    "CWPBD-",
+    "DSAM-",
+    "DRC-",
+    "DRG-",
+    "GACHI-",
+    "HEYDOUGA",
+    "JAV-",
+    "LAF-",
+    "LAFBD-",
+    "HEYZO-",
+    "KTG-",
+    "KP-",
+    "KG-",
+    "LLDV-",
+    "MCDV-",
+    "MKD-",
+    "MKBD-",
+    "MMDV-",
+    "NIP-",
+    "PB-",
+    "PT-",
+    "QE-",
+    "RED-",
+    "RHJ-",
+    "S2M-",
+    "SKY-",
+    "SKYHD-",
+    "SMD-",
+    "SSDV-",
+    "SSKP-",
+    "TRG-",
+    "TS-",
+    "XXX-AV-",
+    "YKB-",
+    "BIRD",
+    "BOUGA",
+    "H4610-",
+    "C0930-",
+    "H0930-",
+    "S2M",
+    "MCB3D",
+)
+
+_SUREN_PREFIXES: dict[str, str] = {
+    "LUXU-": "259LUXU-",
+    "ARA-": "200GANA-",
+    "MIUM-": "300MIUM-",
+    "NTK-": "300NTK-",
+    "MAAN-": "300MAAN-",
+}
+
+_WESTERN_NAMES: dict[str, str] = {
+    "vixen": "Vixen",
+    "blacked": "Blacked",
+    "tushy": "Tushy",
+    "sexart": "SexArt",
+    "x-art": "X-Art",
+    "nubilefilms": "NubileFilms",
+    "babes": "Babes",
+    "wgp": "WhenGirlsPlay",
+    "twistys": "Twistys",
+    "deeper": "Deeper",
+    "slayed": "Slayed",
+    "tushy raw": "TushyRaw",
+    "blackedraw": "BlackedRaw",
+}
+
+_CATALOG_NUMBER = re.compile(r"[A-Z]{2,}-\d{2,}[Z]?")
+_DMM_CONCAT = re.compile(r"([A-Z]{2,})00(\d{3})")
+_TMA_NUMBER = re.compile(r"T\d{2}-?\d{3,}")
+_SIX_DIGIT_CATALOG = re.compile(r"(?<!\d)\d{6}[-_]\d{2,4}(?!\d)")
+_WESTERN_PROBE = re.compile(r"([A-Z0-9_]{2,})[-.]2?0?(\d{2}[-.]\d{2}[-.]\d{2})")
+_WESTERN_PARSE = re.compile(r"([A-Z0-9-]{2,})[-_.]2?0?(\d{2}[-.]\d{2}[-.]\d{2})")
+
+_ESCAPE_MARKERS = (
+    "4K",
+    "4KS",
+    "8K",
+    # 数字分辨率须逐个列出. 未被剥除时其数字片段会被番号规则当作番号
+    # (120115_318-mura-1080p → MURA-1080). 匹配要求两侧为分隔符, 故 1080p60 不受影响.
+    "2160P",
+    "1440P",
+    "1080P",
+    "720P",
+    "480P",
+    "HD",
+    "LR",
+    "VR",
+    "DVD",
+    "FULL",
+    "HEVC",
+    "H264",
+    "H265",
+    "X264",
+    "X265",
+    "AAC",
+    "XXX",
+    "PRT",
+)
+
+_ROOT_PARTS = frozenset({"/", ".", ""})
+_CD_DIR = re.compile(r"^(?:CD|PART)(\d{1,2})$", re.IGNORECASE)
+_DIR_BRACKET_STRIP = "[]【】()（）"
+
+_MOSAIC_DIR_TOKENS: dict[str, Mosaic] = {
+    k.casefold(): v
+    for k, v in (
+        ("uncensored", Mosaic.UNCENSORED),
+        ("無碼", Mosaic.UNCENSORED),
+        ("无码", Mosaic.UNCENSORED),
+        ("cracked", Mosaic.CRACKED),
+        ("破解", Mosaic.CRACKED),
+        ("leaked", Mosaic.LEAKED),
+        ("流出", Mosaic.LEAKED),
+    )
+}
+MOSAIC_VALUES: tuple[Mosaic, ...] = tuple(Mosaic)
+CONTENT_TYPE_VALUES: tuple[ContentType, ...] = tuple(ContentType)
+
+# 分辨率: 元组顺序即优先级; 2160p 归一为 4K.
+# 匹配作用于 _normalize_markers 之后的 basename:
+# - 数字标记允许紧跟帧率 (1080p60); K/p 后不得再接字母 (4KS / HDTV 不命中)
+# - HD/SD 不得是番号前缀: HD-123 / HD_123 (下划线归一成点后同形) 不命中
+_DEFINITION_MARKERS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("8K", re.compile(r"\b8K(?:\d+)?\b")),
+    ("4K", re.compile(r"\b4K(?:\d+)?\b")),
+    ("4K", re.compile(r"\b2160P(?:\d+)?\b")),
+    ("1440p", re.compile(r"\b1440P(?:\d+)?\b")),
+    ("1080p", re.compile(r"\b1080P(?:\d+)?\b")),
+    ("720p", re.compile(r"\b720P(?:\d+)?\b")),
+    ("480p", re.compile(r"\b480P(?:\d+)?\b")),
+    ("HD", re.compile(r"\bHD\b(?![.-]\d)")),
+    ("SD", re.compile(r"\bSD\b(?![.-]\d)")),
+)
+DEFINITION_VALUES: tuple[str, ...] = tuple(dict.fromkeys(value for value, _ in _DEFINITION_MARKERS))
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+def parse_file_info(
+    path: str | Path | None = None, *, text: str | None = None, escape_strings: list[str] | None = None
+) -> FileInfo:
+    """有路径则解析路径, 否则解析 ``text``. 两者至少要有一个.
+
+    路径: 文件名优先, 未命中可回退父目录; 仍未命中用清理后的文件名 (不丢弃).
+    目录关键词 (欧美 / 里番 / getchu) 可覆盖类型. 分集还可认直接父目录 CD/PART.
+    文本: 只执行番号规则, 未命中 ``number is None`` (不能把原文当番号). 文件相位只依据该字符串
+    (``Path(text).stem``, 与中字分集检测一致), 不依据目录.
+    """
+    if path is None and text is None:
+        raise ValueError("path or text required")
+    escape = escape_strings or []
+    if path is not None:
+        # 路径: 文件名优先识别; 目录可覆盖类型, 分集可回退父目录.
+        p = Path(path)
+        stem = p.stem
+        dirs = _dir_names(p)
+        number, content_type = _identify(stem.strip(), dirs, escape, fallback=True)
+        content_type = _classify_from_path(stem, dirs) or content_type
+        basename = stem.upper()
+        cd = _detect_cd(basename)
+        if cd is None and dirs:
+            cd = _detect_cd_from_parent(dirs[-1])
+        mosaic = _detect_mosaic(basename) or _detect_mosaic_from_dirs(dirs)
+    else:
+        # 文本: 只执行番号规则; 未命中则 number 为 None, 相位只依据该字符串.
+        assert text is not None
+        dirs = ()
+        number, content_type = _identify(text, dirs, escape, fallback=False)
+        basename = Path(text).stem.upper()
+        cd = _detect_cd(basename)
+        mosaic = _detect_mosaic(basename)
+    return FileInfo(
+        number=number,
+        content_type=content_type,
+        prefix=_prefix(number) if number else "",
+        cd=cd,
+        has_subtitle=_detect_subtitle(basename),
+        mosaic=_fill_mosaic(mosaic, content_type),
+        definition=_detect_definition(basename),
+    )
+
+
+def extract_number(text: str, escape_strings: list[str] | None = None) -> str | None:
+    """未命中返回 None, 不能把原文冒充番号."""
+    return parse_file_info(text=text, escape_strings=escape_strings).number
+
+
+def infer_content_type(number: str, file_path: str | None = None) -> ContentType:
+    """有挂载文件按路径, 否则按番号; 未命中已知形态则欧美."""
+    return parse_file_info(file_path, text=number).content_type
+
+
+def detect_cd(filename: str | Path) -> int | None:
+    """只解析文件名上的分集, 不依据目录."""
+    return parse_file_info(text=str(filename)).cd
+
+
+def split_number(number: str) -> tuple[str, str]:
+    """番号 → (前缀, 去掉前缀与紧随分隔符后的剩余段)."""
+    prefix = parse_file_info(text=number).prefix
+    if not prefix:
+        return "", ""
+    upper = number.upper()
+    head = prefix.upper()
+    idx = 0 if upper.startswith(head) else upper.find(head)
+    if idx < 0:
+        return prefix, ""
+    return prefix, number[idx + len(prefix) :].lstrip("-_. ")
+
+
+def is_uncensored(number: str) -> bool:
+    return infer_content_type(number) == ContentType.UNCENSORED
+
+
+def is_amateur(number: str) -> bool:
+    return infer_content_type(number) == ContentType.AMATEUR
+
+
+def file_phase_from_path(path: str | Path) -> FilePhase:
+    info = parse_file_info(path)
+    return FilePhase(
+        content_type=info.content_type,
+        mosaic=info.mosaic,
+        has_subtitle=info.has_subtitle,
+        definition=info.definition,
+    )
+
+
+def file_shows_uncensored(mosaic: Mosaic | None, content_type: ContentType) -> bool:
+    """无码角标/筛选: 文件名无码标记或内容类型为无码 (HEYZO 等不必带文件名无码标记)."""
+    return mosaic == Mosaic.UNCENSORED or content_type == ContentType.UNCENSORED
+
+
+def max_definition(values: Iterable[str | None]) -> str | None:
+    """按 DEFINITION_VALUES 顺序取最高档; 未知值忽略."""
+    rank = {name: index for index, name in enumerate(DEFINITION_VALUES)}
+    best: str | None = None
+    best_rank = len(DEFINITION_VALUES)
+    for value in values:
+        if value is None:
+            continue
+        current = rank.get(value)
+        if current is not None and current < best_rank:
+            best = value
+            best_rank = current
+    return best
+
+
+def summarize_file_phases(phases: Iterable[FilePhase]) -> FilePhaseSummary:
+    """按「任一文件具备」聚合; mosaics 按 MOSAIC_VALUES 去重保序."""
+    items = list(phases)
+    if not items:
+        return FilePhaseSummary()
+    mosaic_present = {phase["mosaic"] for phase in items if phase["mosaic"] is not None}
+    return FilePhaseSummary(
+        has_subtitle=any(phase["has_subtitle"] for phase in items),
+        uncensored=any(file_shows_uncensored(phase["mosaic"], phase["content_type"]) for phase in items),
+        mosaics=tuple(mosaic for mosaic in MOSAIC_VALUES if mosaic in mosaic_present),
+        definition=max_definition(phase["definition"] for phase in items),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Identify number + type
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _Prepared:
+    """同一输入的三个加工阶段.
+
+    escaped: 只去掉分辨率/用户逃逸串. 国产 MD 必须用此阶段 — 再剥尾部盘符会把 MD0165-1 的 -1 删除.
+    dated: 再剥 CD/中字尾符, 日期还在. 欧美 studio.YY.MM.DD 使用此阶段.
+    catalog: 再剥日期并归一 FC2. 其余番号规则使用此阶段.
+    """
+
+    escaped: str
+    dated: str
+    catalog: str
+
+
+def _prepare(basename: str, escape_strings: list[str]) -> _Prepared:
+    real_name = basename.strip() + "."
+    escaped = _remove_escape_strings(real_name, escape_strings) + "."
+    dated = (
+        escaped.replace("-C.", ".")
+        .replace(".PART", "-CD")
+        .replace("-PART", "-CD")
+        .replace(" EP.", ".EP")
+        .replace("-CD-", "")
+    )
+    dated = re.sub(r"[-_ .]CD\d{1,2}", "", dated)
+    dated = re.sub(r"[-_ .][A-Z0-9]\.$", "", dated)
+    dated = dated.replace(" ", "-").strip("-_. ")
+    catalog = re.sub(r"\d{4}[-_.]\d{1,2}[-_.]\d{1,2}", "", dated)
+    catalog = re.sub(r"[-\[]\d{2}[-_.]\d{2}[-_.]\d{2}]?", "", catalog)
+    catalog = (
+        catalog.replace("FC2-PPV", "FC2-").replace("FC2PPV", "FC2-").replace("--", "-").replace("GACHIPPV", "GACHI")
+    )
+    return _Prepared(escaped=escaped, dated=dated, catalog=catalog)
+
+
+def _remove_escape_strings(filename: str, escape_strings: list[str]) -> str:
+    upper = filename.upper()
+    for string in escape_strings:
+        if string:
+            upper = upper.replace(string.upper(), "")
+    for marker in _ESCAPE_MARKERS:
+        upper = re.sub(rf"[-_ .\[]{marker}[-_ .\]]", "-", upper)
+    return upper.replace("--", "-").strip("-_ .")
+
+
+def _identify(
+    stem: str,
+    dirs: tuple[str, ...],
+    escape: list[str],
+    *,
+    fallback: bool,
+) -> tuple[str | None, ContentType]:
+    """文件名 → 父目录 (目录不用过宽拼接) → 可选的文件名回退."""
+    if found := _match(stem, escape, generic=True):
+        return found
+    for name in reversed(dirs):
+        if found := _match(name, escape, generic=False):
+            return found
+    if not fallback:
+        return None, ContentType.WESTERN
+    return _fallback(stem, escape)
+
+
+def _match(basename: str, escape_strings: list[str], *, generic: bool) -> tuple[str, ContentType] | None:
+    """命中已知形态则 (番号, 类型), 否则 None. 不含文件名回退."""
+    t = _prepare(basename, escape_strings)
+    c, escaped, dated = t.catalog, t.escaped, t.dated
+
+    if "MYWIFE" in c and re.search(r"NO\.\d*", c):
+        # 注意：f-string 表达式内不能出现反斜杠（Python 3.12 前是语法错误），
+        # 生产镜像是 python:3.10，正则必须先算好再插值。
+        mywife_no = re.findall(r"NO\.(\d*)", c)[0]
+        return f"Mywife No.{mywife_no}", ContentType.CENSORED
+    if m := re.search(r"CW3D2D?BD-?\d{2,}", c):
+        return m.group(), _type_of_catalog_id(m.group())
+    if m := re.search(r"MMR-?[A-Z]{2,}-?\d+[A-Z]*", c):
+        number = m.group().replace("MMR-", "MMR")
+        return number, _type_of_catalog_id(number)
+    # 国产 MD 必须用 escaped: catalog 会删除 MD0165-1 的 -1.
+    if (m := re.search(r"([^A-Z]|^)(MD[A-Z-]*\d{4,}(-\d)?)", escaped)) and "MDVR" not in escaped:
+        return m.group(2), ContentType.CHINESE
+    # 欧美日期号用 dated (日期尚未剥除).
+    if _WESTERN_PROBE.findall(dated):
+        result = _WESTERN_PARSE.findall(dated)
+        if result:
+            short_name = result[0][0].strip("-").lower()
+            full_name: str = _WESTERN_NAMES.get(short_name) or short_name
+            number = (
+                full_name.lower().replace("-", "").replace(".", "") + "." + result[0][1].replace("-", ".")
+            ).capitalize()
+            return number, ContentType.WESTERN
+    # 其余规则用 catalog.
+    if m := re.search(r"XXX-AV-\d{4,}", c):
+        return m.group(), ContentType.UNCENSORED
+    if m := re.search(r"MKY-[A-Z]+-\d{3,}", c):
+        return m.group(), ContentType.CHINESE
+    if "FC2" in c:
+        fc2 = c.replace("PPV", "").replace("_", "-").replace("--", "-")
+        if m := re.search(r"FC2-\d{5,}", fc2):
+            return m.group(), ContentType.FC2
+        if m := re.search(r"FC2\d{5,}", fc2):
+            return m.group().replace("FC2", "FC2-"), ContentType.FC2
+    if "HEYZO" in c:
+        hz = c.replace("_", "-").replace("--", "-")
+        if m := re.search(r"HEYZO-\d{3,}", hz):
+            return m.group(), ContentType.UNCENSORED
+        if m := re.search(r"HEYZO\d{3,}", hz):
+            return m.group().replace("HEYZO", "HEYZO-"), ContentType.UNCENSORED
+    if m := re.search(r"(H4610|C0930|H0930)-[A-Z]+\d{4,}", c):
+        return m.group(), ContentType.UNCENSORED
+    if m := re.search(r"KIN8(TENGOKU)?-?\d{3,}", c):
+        return m.group().replace("TENGOKU", "-").replace("--", "-"), ContentType.UNCENSORED
+    if (m := re.search(r"S2M[BD]*-\d{3,}", c)) or (m := re.search(r"MCB3D[BD]*-\d{2,}", c)):
+        return m.group(), ContentType.UNCENSORED
+    if m := _TMA_NUMBER.search(c):
+        # T28 / T38 等: DMM 连写 Txx00nnn → Txx-nnn; 已有短横线则原样.
+        return re.sub(r"T(\d{2})00", r"T\1-", m.group()), ContentType.CENSORED
+    if m := re.search(r"TH101-\d{3,}-\d{5,}", c):
+        return m.group().lower(), ContentType.UNCENSORED
+    if m := _DMM_CONCAT.search(c):
+        number = f"{m[1]}-{m[2]}"
+        return number, _type_of_catalog_id(number)
+    if m := re.search(r"\d{2,}[A-Z]{2,}-\d{2,}[A-Z]?", c):
+        return m.group(), ContentType.AMATEUR
+    if m := _CATALOG_NUMBER.search(c):
+        file_number = m.group()
+        for key, value in _SUREN_PREFIXES.items():
+            if key in file_number:
+                file_number = value.replace(key, "") + file_number
+                break
+        return file_number, _type_of_catalog_id(file_number)
+    if m := _SIX_DIGIT_CATALOG.search(c):
+        # 六位数字 + 短横线或下划线 + 序号 (010115-001 / 010115_001 是两部). 短于六位的数字号不命中.
+        return m.group(), ContentType.UNCENSORED
+    # 过宽回退仅对文件名 (generic); 目录匹配不进入.
+    if generic and (
+        (m := re.search(r"[A-Z]+-[A-Z]\d+", c))
+        or (m := re.search(r"\d{2,}[-_]\d{2,}", c))
+        or (m := re.search(r"\d{3,}-[A-Z]{3,}", c))
+    ):
+        return m.group(), _type_of_catalog_id(m.group())
+    if m := re.search(r"([^A-Z]|^)(N\d{4})(\D|$)", c):
+        return m.group(2).lower(), ContentType.UNCENSORED
+    if m := re.search(r"H_\d{3,}([A-Z]{2,})(\d{2,})", c):
+        number = f"{m[1]}-{m[2]}"
+        return number, _type_of_catalog_id(number)
+    if generic and (m := re.findall(r"([A-Z]{3,}).*?(\d{2,})", c)):
+        number = f"{m[0][0]}-{m[0][1]}"
+        return number, _type_of_catalog_id(number)
+    if generic and (m := re.findall(r"([A-Z]{2,}).*?(\d{3,})", c)):
+        number = f"{m[0][0]}-{m[0][1]}"
+        return number, _type_of_catalog_id(number)
+    return None
+
+
+def _fallback(stem: str, escape: list[str]) -> tuple[str, ContentType]:
+    """路径仍未命中: FC2/HEYZO 关键字视为该族, 否则清理后的原文 + 欧美."""
+    t = _prepare(stem, escape)
+    if "FC2" in t.catalog:
+        return t.catalog.replace("PPV", "").replace("_", "-").replace("--", "-"), ContentType.FC2
+    if "HEYZO" in t.catalog:
+        return t.catalog.replace("_", "-").replace("--", "-"), ContentType.UNCENSORED
+    temp_name = re.sub(r"[【(（\[].+?[]）)】]", "", t.escaped).strip("@. ")
+    temp_name = unicodedata.normalize("NFC", temp_name)
+    with contextlib.suppress(Exception):
+        temp_name = temp_name.encode("cp932").decode("shift_jis")
+    result = temp_name.strip("-_. ")
+    if result.startswith("FC-"):
+        return result.replace("FC-", "FC2-"), ContentType.FC2
+    return result, ContentType.WESTERN
+
+
+def _type_of_catalog_id(number: str) -> ContentType:
+    if re.fullmatch(r"\d{6}[-_]\d{2,4}", number):
+        return ContentType.UNCENSORED
+    if re.match(r"n\d{4}", number) or re.search(r"[^.]+\.\d{2}\.\d{2}\.\d{2}", number):
+        return ContentType.UNCENSORED
+    upper = number.upper()
+    if any(upper.startswith(prefix.upper()) for prefix in _UNCENSORED_PREFIXES):
+        return ContentType.UNCENSORED
+    if "SIRO" in upper or re.search(r"\d{3,}[A-Z]+-\d{2}", upper):
+        return ContentType.AMATEUR
+    if any(upper.startswith(key.upper()) for key in _SUREN_PREFIXES):
+        return ContentType.AMATEUR
+    if re.search(r"([^A-Z]|^)MD[A-Z-]*\d{4,}", upper) and "MDVR" not in upper:
+        return ContentType.CHINESE
+    if re.search(r"MKY-[A-Z]+-\d{3,}", upper):
+        return ContentType.CHINESE
+    if _CATALOG_NUMBER.search(upper):
+        return ContentType.CENSORED
+    return ContentType.WESTERN
+
+
+def _prefix(number: str) -> str:
+    upper = number.upper()
+    if m := re.search(r"([A-Za-z0-9-.]{3,})[-_. ]\d{2}\.\d{2}\.\d{2}", number):
+        return m[1].upper()
+    if m := re.match(r"(T\d{2})", upper):
+        return m[1]
+    for prefix in ("FC2", "MYWIFE", "KIN8", "S2M", "TH101", "XXX-AV"):
+        if upper.startswith(prefix):
+            return prefix
+    if m := re.search(r"(MKY-[A-Z]+)-\d{3,}", upper):
+        return m[1]
+    if m := re.search(r"(H4610|C0930|H0930)", upper):
+        return m[1]
+    if m := re.search(r"(\d*[A-Za-z]+)\d*", number):
+        return m[1].upper()
+    return number.upper()
+
+
+# ---------------------------------------------------------------------------
+# Path keywords + file phase
+# ---------------------------------------------------------------------------
+
+
+def _dir_names(path: Path) -> tuple[str, ...]:
+    return tuple(p for p in path.parent.parts if p not in _ROOT_PARTS)
+
+
+def _classify_from_path(stem: str, dir_names: tuple[str, ...]) -> ContentType | None:
+    """getchu 整段相等; 里番/裏番/欧美必须段首, 避免 这里番号 / 非欧美."""
+    for name in (stem, *dir_names):
+        if name.lower() == "getchu":
+            return ContentType.HENTAI
+        if name.startswith(("里番", "裏番")):
+            return ContentType.HENTAI
+        if name.startswith("欧美"):
+            return ContentType.WESTERN
+    return None
+
+
+def _detect_cd(basename: str) -> int | None:
+    if m := re.search(r"[-_.]CD(\d{1,2})", basename):
+        return int(m[1])
+    if m := re.search(r"[-_.]PART(\d{1,2})", basename):
+        return int(m[1])
+    if m := re.search(r"-([AB])(?:\.|$)", basename):
+        return ord(m[1]) - ord("A") + 1
+    if m := re.search(r"-([1-9])$", basename):
+        return int(m[1])
+    return None
+
+
+def _detect_cd_from_parent(parent: str) -> int | None:
+    m = _CD_DIR.fullmatch(parent.strip())
+    if m is None:
+        return None
+    n = int(m[1])
+    return n if n >= 1 else None
+
+
+def _detect_subtitle(basename: str) -> bool:
+    if re.search(r"-U?C(?![A-Z0-9])", basename):
+        return True
+    return bool(re.search(r"[字幕中文]", basename))
+
+
+def _fill_mosaic(mosaic: Mosaic | None, content_type: ContentType) -> Mosaic | None:
+    """词表未命中时: 有码类型为 censored, 无码类型为 uncensored; 其它类型为空. 已有标记不覆盖."""
+    if mosaic is not None:
+        return mosaic
+    if content_type is ContentType.CENSORED:
+        return Mosaic.CENSORED
+    if content_type is ContentType.UNCENSORED:
+        return Mosaic.UNCENSORED
+    return None
+
+
+def _detect_mosaic(basename: str) -> Mosaic | None:
+    """basename 已大写. `CRACKED` / `-U` / `-UC` 是破解; 多标记时破解优先于流出, 流出优先于无码."""
+    if re.search(r"破解|克破|CRACKED", basename) or re.search(r"-U(C)?(?![A-Z0-9])", basename):
+        return Mosaic.CRACKED
+    if re.search(r"流出|LEAKED", basename):
+        return Mosaic.LEAKED
+    if re.search(r"無碼|无码|UNCENSORED", basename):
+        return Mosaic.UNCENSORED
+    return None
+
+
+def _detect_mosaic_from_dirs(dir_names: tuple[str, ...]) -> Mosaic | None:
+    for name in reversed(dir_names):
+        token = name.strip().strip(_DIR_BRACKET_STRIP).casefold()
+        if token in _MOSAIC_DIR_TOKENS:
+            return _MOSAIC_DIR_TOKENS[token]
+    return None
+
+
+def _normalize_markers(text: str) -> str:
+    return re.sub(r"_|[^\x00-\x7F]", ".", text)
+
+
+def _detect_definition(basename: str) -> str | None:
+    normalized = _normalize_markers(basename)
+    for value, pattern in _DEFINITION_MARKERS:
+        if pattern.search(normalized):
+            return value
+    return None
+
+
+# ---------------------------------------------------------------------------
+# 番号/名字比对 (移植自 amane src/amane/crawlers/parsing.py)
+# ---------------------------------------------------------------------------
+
+
+def fold_number(number: str) -> str:
+    """大小写、短横线、空格视为同一番号, 供来源比对检索结果.
+
+    不允许把 ``_`` 当作 ``-``: 010115_001 与 010115-001 是两部片.
+    """
+    return number.casefold().replace("-", "").replace(" ", "")
+
+
+# 欧美日期号: 片商名可含 ``-``, 因此片商段用非贪婪匹配回溯.
+_WESTERN_NUMBER = re.compile(
+    r"^(?P<studio>.+?)(?P<sep0>[._-])(?P<year>\d{4}|\d{2})(?P<sep1>[._-])(?P<month>\d{2})(?P<sep2>[._-])(?P<day>\d{2})$"
+)
+
+
+@dataclass(frozen=True)
+class WesternNumber:
+    """欧美日期号 ``Studio.YY.MM.DD`` 的解析结果.
+
+    ``alternate`` 是同一番号的另一种年份写法, 不参与相等判定.
+    """
+
+    studio: str
+    date: str
+    alternate: str = field(compare=False)
+
+
+def fold_studio(name: str) -> str:
+    """片商名折叠: 忽略大小写与非字母数字, 供番号与站内片商名比较."""
+    return "".join(ch for ch in unicodedata.normalize("NFKC", name).casefold() if ch.isalnum())
+
+
+def _valid_ymd(year: int, month: int, day: int) -> bool:
+    """内联自 amane src/amane/utils/dates.py: 日历日合法性校验 (parse_western_number 用)."""
+    if year < 1 or year > 9999 or month < 1 or month > 12 or day < 1:
+        return False
+    return day <= calendar.monthrange(year, month)[1]
+
+
+def parse_western_number(number: str) -> WesternNumber | None:
+    """``Studio.YY.MM.DD`` → 折叠片商、``YYYY-MM-DD`` 与另一种年份写法; 其它形态与非法日期返回 None.
+
+    2 位年份一律按 20xx 解读 (欧美日期号没有 19xx 的写法).
+    """
+    match = _WESTERN_NUMBER.match(number.strip())
+    if match is None:
+        return None
+    year = match["year"]
+    full_year = year if len(year) == 4 else f"20{year}"
+    date = f"{full_year}-{match['month']}-{match['day']}"
+    # 原实现调用 amane.utils.dates.normalize_calendar_date 校验; 此处 date 已是 YYYY-MM-DD,
+    # 等价于直接做日历合法性校验.
+    if not _valid_ymd(int(full_year), int(match["month"]), int(match["day"])):
+        return None
+    alternate_year = year[2:] if len(year) == 4 else f"20{year}"
+    alternate = "".join(
+        (match["studio"], match["sep0"], alternate_year, match["sep1"], match["month"], match["sep2"], match["day"])
+    )
+    return WesternNumber(studio=fold_studio(match["studio"]), date=date, alternate=alternate)
+
+
+def is_same_number(left: str, right: str) -> bool:
+    """两个番号是否同指一部: 折叠后相等, 或同为欧美日期号且片商与发布日期相同; 任一侧为空为假."""
+    if not left or not right:
+        return False
+    if fold_number(left) == fold_number(right):
+        return True
+    western = parse_western_number(left)
+    return western is not None and western == parse_western_number(right)
+
+
+def normalize_name(value: str) -> str:
+    """名字取值归一: NFKC 折叠 + 去首尾空白, 保留大小写. 供落库与展示取值."""
+    return unicodedata.normalize("NFKC", value).strip()
+
+
+def fold_name(value: str) -> str:
+    """名字比较键: ``normalize_name`` 之后大小写无关; 空名归一为空串."""
+    return normalize_name(value).casefold()
+
+
+def is_same_name(left: str, right: str) -> bool:
+    """两个名字是否同一人 (含别名写法): 折叠后相等; 任一侧为空为假."""
+    return bool(left) and bool(right) and fold_name(left) == fold_name(right)
+
+
+def leading_token(text: str) -> str:
+    """取空白分隔的首个词 (条目标题常以番号开头); 无词返回空串."""
+    parts = text.split()
+    return parts[0] if parts else ""

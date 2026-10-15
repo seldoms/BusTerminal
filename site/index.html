@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BusTerminal — 面向个人媒体库的自动化控制台</title>
+<meta name="description" content="把内容发现、元数据缓存、磁链选择、下载调度、文件整理、媒体库入库与清理维护串成一条可验证的闭环。自托管、GPL-3.0、Docker 一键部署。">
+<meta name="theme-color" content="#08080a">
+<link rel="canonical" href="https://seldoms.github.io/BusTerminal/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="BusTerminal — 面向个人媒体库的自动化控制台">
+<meta property="og:description" content="把散落一地的媒体工具，串成一条可验证的闭环。自托管、GPL-3.0、Docker 一键部署。">
+<meta property="og:url" content="https://seldoms.github.io/BusTerminal/">
+<meta property="og:image" content="https://seldoms.github.io/BusTerminal/images/home-blurred.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2308080a'/%3E%3Crect x='9' y='9' width='14' height='14' rx='3' fill='%23ffc21a'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-title-key="meta.index.title">
+
+<header class="site-header">
+  <div class="container">
+    <a class="brand" href="index.html"><span class="dot"></span>BusTerminal</a>
+    <nav class="nav">
+      <a href="features.html" data-i18n="nav.features">特性</a>
+      <a href="faq.html" data-i18n="nav.faq">常见问题</a>
+      <a href="https://github.com/seldoms/BusTerminal/blob/main/docs/INSTALL.md" data-i18n="nav.install">安装指南</a>
+      <a href="https://github.com/seldoms/BusTerminal">GitHub&nbsp;↗</a>
+      <button class="lang-btn" id="lang-toggle" type="button" aria-label="Switch language">EN</button>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <section class="hero">
+    <div class="container">
+      <p class="kicker" data-i18n="home.kicker">自托管 · 开源 · Docker</p>
+      <h1 data-i18n-html="home.title">散落一地的媒体工具，<br>串成一条能验证的闭环</h1>
+      <p class="lede" data-i18n="home.lede">发现、缓存、翻译、下载、整理、入库 —— 每个环节的状态都集中在一处，可追溯、可重试。</p>
+      <ul class="badges">
+        <li data-i18n="home.badge.self">自托管</li>
+        <li data-i18n="home.badge.license">GPL-3.0</li>
+        <li data-i18n="home.badge.docker">Docker 一键部署</li>
+        <li data-i18n="home.badge.arch">官方镜像 linux/amd64</li>
+      </ul>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="#start" data-i18n="home.cta.start">一行命令跑起来</a>
+        <a class="btn btn-ghost" href="features.html" data-i18n="home.cta.features">看完整特性</a>
+      </div>
+      <div class="code">
+        <button class="copy" type="button" data-i18n="common.copy">复制</button>
+        <pre><code>docker run -d --name bus_terminal -p 8012:8000 \
+  -v "$PWD/busterminal-data:/app/data" \
+  ghcr.io/seldoms/busterminal:latest</code></pre>
+      </div>
+    </div>
+  </section>
+
+  <section class="showcase" id="shots">
+    <div class="container">
+      <div class="section-head center">
+        <p class="eyebrow" data-i18n="home.shots.eyebrow">01 / 界面</p>
+        <h2 data-i18n="home.shots.title">从首次引导，到日常主界面</h2>
+      </div>
+      <figure class="frame">
+        <div class="bar"><i class="on"></i><i></i><i></i><span>bus_terminal</span></div>
+        <img src="images/home-blurred.jpg" alt="BusTerminal 主界面" loading="eager">
+        <figcaption data-i18n="home.shots.1">主界面：发现、订阅、库状态与任务集中一屏（示例数据已模糊处理）</figcaption>
+      </figure>
+      <div class="grid cols-3 shots">
+        <figure class="shot">
+          <img src="images/onboarding-overview.png" alt="首次部署引导向导" loading="lazy">
+          <figcaption data-i18n="home.shots.2">首次引导：按步骤配好接口、下载与缓存策略</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="images/onboarding-services.png" alt="接口与授权配置" loading="lazy">
+          <figcaption data-i18n="home.shots.3">接口与授权：接你自己的下载器与媒体服务器</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="images/onboarding-blocklist.png" alt="屏蔽关键词设置" loading="lazy">
+          <figcaption data-i18n="home.shots.4">屏蔽关键词：把不想要的内容挡在链路之外</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section id="pipeline">
+    <div class="container">
+      <div class="section-head center">
+        <p class="eyebrow" data-i18n="home.pipe.eyebrow">02 / 链路</p>
+        <h2 data-i18n="home.pipe.title">一条链路，八段状态</h2>
+        <p data-i18n="home.pipe.body">每一段都记录谁发起、进行到哪、成功还是失败。哪一环断了，一眼看得出来。</p>
+      </div>
+      <ul class="flow">
+        <li data-i18n="home.flow.1">内容发现</li>
+        <li class="sep">→</li>
+        <li data-i18n="home.flow.2">元数据缓存</li>
+        <li class="sep">→</li>
+        <li data-i18n="home.flow.3">磁链选择</li>
+        <li class="sep">→</li>
+        <li data-i18n="home.flow.4">下载执行</li>
+        <li class="sep">→</li>
+        <li data-i18n="home.flow.5">文件投放</li>
+        <li class="sep">→</li>
+        <li data-i18n="home.flow.6">媒体库入库</li>
+        <li class="sep">→</li>
+        <li data-i18n="home.flow.7">状态回写</li>
+        <li class="sep">→</li>
+        <li data-i18n="home.flow.8">订阅 / 清理</li>
+      </ul>
+      <div class="note centered" data-i18n-html="home.pipe.note">
+        <strong>它不碰你的文件。</strong>只记录状态、下发指令、校验结果 —— 下载和整理仍交给你已经信任的工具。
+      </div>
+    </div>
+  </section>
+
+  <section id="capabilities">
+    <div class="container">
+      <div class="section-head center">
+        <p class="eyebrow" data-i18n="home.cap.eyebrow">03 / 能做什么</p>
+        <h2 data-i18n="home.cap.title">链路上的每一段，都由它记账</h2>
+      </div>
+      <div class="grid cols-3">
+        <article class="card icon">
+          <h3 data-i18n="home.cap.1.t">多源发现与元数据</h3>
+          <p data-i18n="home.cap.1.d">多来源统一检索、按番号聚合；详情与封面落库缓存，翻库不再逐条回源。</p>
+        </article>
+        <article class="card icon">
+          <h3 data-i18n="home.cap.2.t">标题中文化</h3>
+          <p data-i18n="home.cap.2.d">本地大模型批量翻译，带质量闸：不合格的译文不落库，宁可没有中文。</p>
+        </article>
+        <article class="card icon">
+          <h3 data-i18n="home.cap.3.t">磁链与下载调度</h3>
+          <p data-i18n="home.cap.3.d">指挥 qBittorrent 执行并归类；做种达标后自动投放，不必盯着进度条。</p>
+        </article>
+        <article class="card icon">
+          <h3 data-i18n="home.cap.4.t">入库闭环</h3>
+          <p data-i18n="home.cap.4.d">投递 → 整理 → 刷库，每一步都回写状态，卡在哪一环直接可见。</p>
+        </article>
+        <article class="card icon">
+          <h3 data-i18n="home.cap.5.t">库状态与清理</h3>
+          <p data-i18n="home.cap.5.d">本地文件清单、删除保护、滞留检测，堵住“下完没入库”的黑洞。</p>
+        </article>
+        <article class="card icon">
+          <h3 data-i18n="home.cap.6.t">部署与凭据安全</h3>
+          <p data-i18n="home.cap.6.d">首次引导向导、可开关的鉴权、库内敏感配置加密存储。</p>
+        </article>
+      </div>
+      <p style="margin-top:22px;text-align:center">
+        <a href="features.html" data-i18n="home.cap.more">全部特性 →</a>
+      </p>
+    </div>
+  </section>
+
+  <section id="start">
+    <div class="container">
+      <div class="section-head center">
+        <p class="eyebrow" data-i18n="home.start.eyebrow">04 / 怎么跑</p>
+        <h2 data-i18n="home.start.title">三种起手式，挑一个</h2>
+        <p data-i18n="home.start.body">官方镜像已发布在 GHCR，不用 clone 源码，也不用自己构建。</p>
+      </div>
+      <div class="grid cols-3">
+        <article class="card">
+          <h3 data-i18n="home.start.a.t">一行命令 · 最快</h3>
+          <p data-i18n="home.start.a.d">默认 SQLite，不需要额外容器。开 8012 端口就进引导向导。</p>
+          <div class="code">
+            <button class="copy" type="button" data-i18n="common.copy">复制</button>
+            <pre><code>docker run -d \
+  --name bus_terminal \
+  -p 8012:8000 \
+  -v "$PWD/busterminal-data:/app/data" \
+  ghcr.io/seldoms/busterminal:latest</code></pre>
+          </div>
+        </article>
+        <article class="card">
+          <h3 data-i18n="home.start.b.t">Compose · 官方推荐</h3>
+          <p data-i18n="home.start.b.d">路径与端口全部可配，可选带上 PostgreSQL。适合长期运行。</p>
+          <div class="code">
+            <button class="copy" type="button" data-i18n="common.copy">复制</button>
+            <pre><code>git clone https://github.com/seldoms/BusTerminal.git
+cd BusTerminal
+cp .env.install.example .env
+vi .env   <span class="cmt"># port &amp; db password</span>
+docker compose -f docker-compose.install.yml up -d</code></pre>
+          </div>
+        </article>
+        <article class="card">
+          <h3 data-i18n="home.start.c.t">全栈 · 一次装齐</h3>
+          <p data-i18n="home.start.c.d">连数据库、下载器、刮削工具、媒体服务器一起装。每个服务挂一个 profile，装哪些由你决定。</p>
+          <div class="code">
+            <button class="copy" type="button" data-i18n="common.copy">复制</button>
+            <pre><code>cp .env.fullstack.example .env
+COMPOSE_PROFILES=db,qb,amane,jellyfin \
+  docker compose -f docker-compose.fullstack.yml up -d</code></pre>
+          </div>
+        </article>
+      </div>
+      <div class="note centered" style="margin-top:20px" data-i18n-html="home.start.note">
+        <strong>不想自己排端口和路径？</strong>
+        把 <code>docs/AGENT_FULLSTACK_INSTALL.md</code> 整段交给你的 AI agent：它先探查本机，
+        把服务清单摊给你逐项选，<strong>你确认之后才动手安装</strong>。已经装好的服务只复用、不重装。
+      </div>
+    </div>
+  </section>
+
+  <section id="relation">
+    <div class="container">
+      <div class="section-head center">
+        <p class="eyebrow" data-i18n="home.rel.eyebrow">05 / 边界</p>
+        <h2 data-i18n="home.rel.title">不替代你已经在用的工具</h2>
+        <p data-i18n="home.rel.body">每个环节交给最合适的组件，它只负责决策、下发与记账。</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th data-i18n="home.rel.th1">环节</th>
+              <th data-i18n="home.rel.th2">由谁负责</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td data-i18n="home.rel.r1a">下载执行</td>
+              <td data-i18n="home.rel.r1b">你已有的下载器（qBittorrent 等）</td>
+            </tr>
+            <tr>
+              <td data-i18n="home.rel.r2a">命名、整理、生成 NFO</td>
+              <td data-i18n="home.rel.r2b">你已有的刮削工具</td>
+            </tr>
+            <tr>
+              <td data-i18n="home.rel.r3a">媒体库扫描与播放</td>
+              <td data-i18n="home.rel.r3b">你已有的媒体服务器（Jellyfin 等）</td>
+            </tr>
+            <tr>
+              <td data-i18n="home.rel.r4a">发现、决策、状态与重试</td>
+              <td><strong data-i18n="home.rel.r4c">BusTerminal</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="note centered" style="margin-top:20px" data-i18n="home.rel.note">
+        组件之间不用你写脚本粘合 —— 链路、状态回写、失败重试都由它驱动，接入地址填一次即可。
+      </div>
+    </div>
+  </section>
+
+  <section id="docs">
+    <div class="container">
+      <div class="section-head center">
+        <p class="eyebrow" data-i18n="home.docs.eyebrow">06 / 文档</p>
+        <h2 data-i18n="home.docs.title">从安装到每一个配置项</h2>
+      </div>
+      <div class="grid cols-3">
+        <a class="card card-link" href="https://github.com/seldoms/BusTerminal/blob/main/docs/INSTALL.md">
+          <h3 data-i18n="home.docs.1.t">安装指南</h3>
+          <p data-i18n="home.docs.1.d">目录组织、使用动线、分场景步骤与常见卡点。</p>
+          <p class="more" data-i18n="home.docs.open">打开 →</p>
+        </a>
+        <a class="card card-link" href="https://github.com/seldoms/BusTerminal/blob/main/docs/CONFIGURATION.md">
+          <h3 data-i18n="home.docs.2.t">配置说明</h3>
+          <p data-i18n="home.docs.2.d">每个配置项的含义、默认值与敏感配置的加密方式。</p>
+          <p class="more" data-i18n="home.docs.open">打开 →</p>
+        </a>
+        <a class="card card-link" href="https://github.com/seldoms/BusTerminal/blob/main/docs/API.md">
+          <h3 data-i18n="home.docs.3.t">API 参考</h3>
+          <p data-i18n="home.docs.3.d">后端接口清单，便于二次集成与自动化脚本调用。</p>
+          <p class="more" data-i18n="home.docs.open">打开 →</p>
+        </a>
+        <a class="card card-link" href="https://github.com/seldoms/BusTerminal/blob/main/docs/AGENT_FULLSTACK_INSTALL.md">
+          <h3 data-i18n="home.docs.4.t">交给 Agent 装</h3>
+          <p data-i18n="home.docs.4.d">全栈安装提示词：先探查、再让你逐项确认、最后才动手。</p>
+          <p class="more" data-i18n="home.docs.open">打开 →</p>
+        </a>
+        <a class="card card-link" href="https://github.com/seldoms/BusTerminal/blob/main/docs/USER_STORIES_AND_DATA_FLOW.md">
+          <h3 data-i18n="home.docs.5.t">用户故事与数据流</h3>
+          <p data-i18n="home.docs.5.d">这份系统怎么运转、数据在链路里怎么流动。</p>
+          <p class="more" data-i18n="home.docs.open">打开 →</p>
+        </a>
+        <a class="card card-link" href="faq.html">
+          <h3 data-i18n="home.docs.6.t">常见问题</h3>
+          <p data-i18n="home.docs.6.d">数据库、ARM、端口冲突、升级回滚与合规边界。</p>
+          <p class="more" data-i18n="home.docs.open">打开 →</p>
+        </a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="container">
+    <div class="footer-grid">
+      <div>
+        <h4 data-i18n="foot.project">项目</h4>
+        <ul>
+          <li><a href="https://github.com/seldoms/BusTerminal">GitHub</a></li>
+          <li><a href="https://github.com/seldoms/BusTerminal/pkgs/container/busterminal" data-i18n="foot.image">容器镜像</a></li>
+          <li><a href="https://github.com/seldoms/BusTerminal/issues" data-i18n="foot.issues">问题反馈</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4 data-i18n="foot.docs">文档</h4>
+        <ul>
+          <li><a href="features.html" data-i18n="nav.features">特性</a></li>
+          <li><a href="faq.html" data-i18n="nav.faq">常见问题</a></li>
+          <li><a href="https://github.com/seldoms/BusTerminal/blob/main/docs/CONFIGURATION.md" data-i18n="foot.config">配置说明</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4 data-i18n="foot.legal">许可与安全</h4>
+        <ul>
+          <li><a href="https://github.com/seldoms/BusTerminal/blob/main/LICENSE">GPL-3.0</a></li>
+          <li><a href="https://github.com/seldoms/BusTerminal/blob/main/SECURITY.md" data-i18n="foot.security">安全策略</a></li>
+          <li><a href="https://github.com/seldoms/BusTerminal/blob/main/NOTICE">NOTICE</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-legal">
+      <p data-i18n="foot.disclaimer">
+        BusTerminal 是一个自托管的媒体库自动化管理软件，以 GPL-3.0 许可证分发，不提供任何担保。
+        它不提供、不内置、不托管、不索引任何内容来源，也不绕过任何数字版权保护或付费访问限制。
+        软件本身不包含任何媒体内容；使用者须自行确保其下载、存储与传播行为符合所在国家和地区的法律法规，
+        并自行承担相应责任。
+      </p>
+    </div>
+  </div>
+</footer>
+
+<script src="assets/i18n.js"></script>
+<script src="assets/site.js"></script>
+</body>
+</html>

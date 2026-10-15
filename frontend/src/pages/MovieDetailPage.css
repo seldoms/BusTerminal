@@ -1,0 +1,476 @@
+.movie-detail-page .back-btn {
+    margin-bottom: 24px;
+}
+
+.detail-loading {
+    display: grid;
+    place-items: center;
+    align-content: center;
+    gap: 14px;
+    min-height: min(620px, calc(100vh - var(--header-height) - 48px));
+    color: var(--text-secondary);
+}
+
+.detail-loading p {
+    margin: 0;
+    font-size: 14px;
+}
+
+.detail-content {
+    display: grid;
+    gap: 32px;
+}
+
+.detail-header-top {
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+}
+
+.detail-title {
+    font-size: 24px;
+    font-weight: 600;
+    line-height: 1.4;
+    color: var(--text-primary);
+}
+
+.detail-content {
+    display: flex;
+    flex-direction: column;
+    gap: 32px;
+}
+
+.detail-main-info {
+    display: flex;
+    gap: 32px;
+    align-items: flex-start;
+}
+
+.detail-poster-section {
+    flex: 0 0 350px;
+}
+
+.detail-poster-section img {
+    width: 100%;
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
+}
+
+.detail-metadata-section {
+    flex: 1;
+}
+
+.detail-info-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.info-row {
+    display: flex;
+    font-size: 15px;
+    line-height: 1.6;
+}
+
+.info-label {
+    font-weight: 600;
+    color: var(--text-secondary);
+    min-width: 100px;
+}
+
+.info-value {
+    color: var(--text-primary);
+    flex: 1;
+}
+
+.movie-detail-page .section-title {
+    font-size: 20px;
+    font-weight: 600;
+    margin-bottom: 20px;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.movie-detail-page .section-title::before {
+    content: '';
+    display: inline-block;
+    width: 4px;
+    height: 18px;
+    background: var(--primary);
+    border-radius: 2px;
+}
+
+.samples-section {
+    margin-top: 40px;
+}
+
+.samples-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 16px;
+}
+
+.sample-item {
+    cursor: pointer;
+    overflow: hidden;
+    padding: 0;
+    aspect-ratio: 16/10;
+    transition: all 0.3s ease;
+}
+
+.sample-item img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transition: transform 0.5s ease;
+}
+
+.sample-item:hover {
+    transform: translateY(-4px);
+    box-shadow: var(--shadow-xl);
+    border-color: var(--primary);
+}
+
+.sample-item:hover img {
+    transform: scale(1.1);
+}
+
+.magnets-section {
+    margin-top: 40px;
+    padding-top: 32px;
+    border-top: 1px solid var(--border);
+}
+
+.preference-selector {
+    margin-bottom: 24px;
+    padding: 20px;
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+}
+
+.preference-selector label {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 12px;
+}
+
+.preference-buttons {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.selected-magnet {
+    padding: 24px;
+    margin-bottom: 32px;
+    border: 2px solid var(--primary);
+}
+
+.selected-magnet h3 {
+    font-size: 20px;
+    margin-bottom: 16px;
+    color: var(--text-main);
+}
+
+.magnet-details {
+    margin-bottom: 20px;
+}
+
+.magnet-details p {
+    margin-bottom: 8px;
+    line-height: 1.6;
+}
+
+.download-btn {
+    width: 100%;
+    padding: 14px;
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.all-magnets {
+    margin-top: 32px;
+}
+
+.all-magnets h3 {
+    font-size: 20px;
+    margin-bottom: 16px;
+    font-weight: 600;
+}
+
+/* 表格容器 */
+.magnets-table-container {
+    overflow-x: auto;
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+}
+
+/* 表格样式 */
+.magnets-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.magnets-table thead {
+    background: var(--bg-secondary);
+}
+
+.magnets-table th {
+    padding: 14px 16px;
+    text-align: left;
+    font-weight: 600;
+    color: var(--text-primary);
+    border-bottom: 2px solid var(--border);
+    font-size: 14px;
+}
+
+.magnets-table tbody tr {
+    border-bottom: 1px solid var(--border);
+    transition: background-color 0.2s ease;
+}
+
+.magnets-table tbody tr:hover {
+    background: var(--bg-secondary);
+}
+
+.magnets-table tbody tr:last-child {
+    border-bottom: none;
+}
+
+.magnets-table td {
+    padding: 14px 16px;
+    font-size: 14px;
+    color: var(--text-primary);
+}
+
+/* 磁力名称单元格 */
+.magnet-name-cell {
+    max-width: 600px;
+}
+
+.magnet-name-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+}
+
+/* 高清标签 */
+.quality-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    background: var(--surface-2);
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 500;
+    border-radius: 4px;
+    white-space: nowrap;
+}
+
+/* 字幕标签 */
+.subtitle-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+    color: white;
+    font-size: 12px;
+    font-weight: 500;
+    border-radius: 4px;
+    white-space: nowrap;
+}
+
+/* 磁力链接 */
+.magnet-link {
+    color: var(--primary);
+    text-decoration: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 450px;
+    display: inline-block;
+    transition: color 0.2s ease;
+}
+
+.magnet-link:hover {
+    color: var(--primary-hover);
+    text-decoration: underline;
+}
+
+/* 操作按钮容器 */
+.magnet-actions-inline {
+    display: flex;
+    gap: 8px;
+}
+
+/* 操作按钮 */
+.movie-detail-page .action-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 6px 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    color: var(--text-primary);
+}
+
+.movie-detail-page .action-btn:hover {
+    background: var(--primary);
+    border-color: var(--primary);
+    color: white;
+    transform: translateY(-1px);
+}
+
+.movie-detail-page .action-btn svg {
+    width: 16px;
+    height: 16px;
+}
+
+.copy-btn:hover {
+    background: #3b82f6;
+    border-color: #3b82f6;
+}
+
+.download-btn-small:hover {
+    background: var(--success);
+    border-color: var(--success);
+}
+
+.detail-stars-section {
+    margin-top: 24px;
+    padding-top: 16px;
+    border-top: 1px dashed var(--border);
+}
+
+.stars-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 12px;
+}
+
+.star-tag {
+    display: inline-block;
+    padding: 6px 14px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    color: var(--text-primary);
+    text-decoration: none;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.star-tag:hover {
+    border-color: var(--primary-color, var(--primary));
+    color: var(--primary-color, var(--primary));
+}
+
+.detail-error {
+    min-height: 260px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    color: var(--text-primary);
+}
+
+.detail-error p {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 16px;
+}
+
+.detail-error-actions {
+    display: flex;
+    gap: 12px;
+}
+
+.detail-genres-section {
+    margin-top: 24px;
+    padding-top: 16px;
+    border-top: 1px dashed var(--border);
+}
+
+.genres-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 12px;
+}
+
+.genre-tag {
+    display: inline-block;
+    padding: 6px 14px;
+    background: var(--surface-2);
+    color: var(--text);
+    border-radius: var(--control-radius);
+    font-size: 14px;
+    font-weight: 500;
+    text-decoration: none;
+    transition: all 0.2s;
+    border: 1px solid var(--border-base);
+}
+
+.genre-tag:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    text-decoration: none;
+    border-color: var(--primary);
+}
+
+@media (max-width: 900px) {
+    .detail-main-info {
+        flex-direction: column;
+        align-items: center;
+        gap: 24px;
+    }
+
+    .detail-poster-section {
+        flex: 0 0 auto;
+        width: 100%;
+        max-width: 400px;
+    }
+
+    .detail-metadata-section {
+        width: 100%;
+    }
+
+    .detail-title {
+        font-size: 20px;
+        text-align: center;
+    }
+
+    .info-label {
+        min-width: 80px;
+    }
+}
+
+@media (max-width: 600px) {
+    .preference-buttons {
+        flex-direction: column;
+    }
+
+    .preference-buttons button {
+        width: 100%;
+    }
+
+    .magnet-name-wrapper {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .magnet-actions-inline {
+        margin-top: 10px;
+        width: 100%;
+        justify-content: space-between;
+    }
+}

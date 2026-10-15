@@ -1,0 +1,370 @@
+.navbar-header {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: var(--navbar-bg);
+    -webkit-backdrop-filter: blur(20px);
+    backdrop-filter: blur(20px);
+    border-bottom: 1px solid var(--border);
+    height: var(--header-height);
+}
+
+.navbar-header > .container {
+    max-width: var(--nav-content-width);
+    height: 100%;
+    margin: 0 auto;
+    padding: 0 var(--content-padding);
+}
+
+.navbar-content {
+    max-width: none;
+    height: 100%;
+    margin: 0 auto;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.navbar-logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 800;
+    font-size: 22px;
+    text-decoration: none;
+    color: var(--text);
+    flex-shrink: 0;
+}
+
+.logo-icon {
+    color: var(--brand);
+}
+
+.navbar-nav {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    min-width: 0;
+}
+
+/* 导航文字跟随主题前景色，亮/暗主题均保证可读 */
+.navbar-nav .nav-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 8px 10px;
+    color: var(--text) !important;
+    border-radius: var(--control-radius);
+    font-size: 14px !important;
+    font-weight: 650 !important;
+    text-decoration: none;
+    white-space: nowrap;
+    opacity: 0.95;
+    transition: all 0.2s ease;
+}
+
+.navbar-nav .nav-item:hover,
+.navbar-nav .nav-item.active {
+    color: var(--brand) !important;
+    background: var(--surface-2);
+    opacity: 1;
+}
+
+.nav-item-icon {
+    vertical-align: middle;
+    color: inherit;
+}
+
+/* 内容浏览组与管理组之间的分隔符：桌面竖线，移动端横线 */
+.nav-divider {
+    width: 1px;
+    height: 18px;
+    background: var(--border);
+    margin: 0 8px;
+    flex-shrink: 0;
+}
+
+/* 移动端搜索图标按钮：默认隐藏，≤640px 时代替搜索框出现 */
+.navbar-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
+.navbar-search {
+    width: 220px;
+    height: 38px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--control-radius);
+    display: flex;
+    align-items: center;
+    padding: 0 14px;
+}
+
+.navbar-search input {
+    width: 100%;
+    border: 0;
+    outline: 0;
+    color: var(--text);
+    background: transparent;
+    font-size: 14px;
+}
+
+.navbar-search input::placeholder {
+    color: var(--muted);
+}
+
+.navbar-search button {
+    background: none;
+    border: 0;
+    color: var(--text);
+    cursor: pointer;
+    padding: 4px;
+}
+
+.navbar-icons {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.nav-icon-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.nav-icon-btn {
+    width: 38px;
+    height: 38px;
+    border-radius: 999px;
+    border: 0;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text);
+    background: var(--surface-2);
+    transition: all 0.15s ease;
+}
+
+.nav-icon-btn:hover {
+    background: var(--surface);
+    color: var(--brand);
+}
+
+.nav-icon-link {
+    width: 38px;
+    height: 38px;
+    border-radius: 999px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text);
+    text-decoration: none;
+}
+
+.nav-icon-link:hover {
+    background: var(--surface-2);
+    color: var(--brand);
+}
+
+.layout-popover {
+    position: absolute;
+    top: calc(100% + 12px);
+    right: 0;
+    margin-top: 0;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 16px;
+    width: 220px;
+    z-index: 1001;
+    box-shadow: var(--shadow);
+}
+
+.layout-toggle-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 14px;
+}
+
+.popover-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+    font-size: 14px;
+    color: var(--text-soft);
+}
+
+.popover-value {
+    font-weight: 600;
+    color: var(--brand);
+}
+
+.layout-slider {
+    width: 100%;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--surface);
+    outline: none;
+    -webkit-appearance: none;
+    appearance: none;
+}
+
+.layout-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--brand);
+    cursor: pointer;
+}
+
+.mobile-menu-toggle {
+    display: none;
+    flex-direction: column;
+    gap: 4px;
+    background: none;
+    border: 0;
+    cursor: pointer;
+    padding: 8px;
+}
+
+.mobile-menu-toggle .bar {
+    width: 20px;
+    height: 2px;
+    background: var(--text);
+    border-radius: 2px;
+    transition: all 0.3s ease;
+}
+
+.layout-mode-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: -2px 0 12px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.layout-mode-row span:last-child {
+    color: var(--brand);
+    font-weight: 700;
+}
+
+@media (min-width: 1101px) and (max-width: 1360px) {
+    .navbar-content { gap: 8px; }
+    .navbar-logo { font-size: 18px; gap: 7px; }
+    .navbar-logo .logo-icon svg { width: 18px; height: 18px; }
+    .navbar-nav { gap: 0; }
+    .navbar-nav .nav-item { padding: 7px 4px; font-size: 12px !important; gap: 3px; }
+    .navbar-nav .nav-item .nav-item-icon { width: 13px; height: 13px; }
+    .nav-divider { margin: 0 2px; }
+    .navbar-search { width: 160px; }
+    .navbar-icons { gap: 6px; }
+    .nav-icon-btn, .nav-icon-link { width: 34px; height: 34px; }
+}
+
+@media (max-width: 1100px) {
+    .navbar-content { gap: 16px; }
+    .navbar-nav { display: none; }
+    .navbar-nav.mobile-visible {
+        display: flex;
+        flex-direction: column;
+        position: absolute;
+        top: var(--header-height);
+        left: 0;
+        right: 0;
+        background: var(--surface);
+        padding: 16px;
+        gap: 4px;
+        z-index: 100;
+    }
+    .navbar-nav.mobile-visible .nav-item { width: 100%; border-radius: var(--radius-sm); }
+    .navbar-nav.mobile-visible .nav-divider {
+        width: 100%;
+        height: 1px;
+        margin: 6px 0;
+    }
+    .navbar-search { width: min(220px, 30vw); }
+    .mobile-menu-toggle { display: flex; }
+}
+
+@media (max-width: 640px) {
+    .navbar-search { width: min(200px, 42vw); }
+    .navbar-content { gap: 12px; }
+    .navbar-logo { font-size: 18px; }
+    .layout-popover { right: -48px; }
+}
+
+/* 极窄屏：logo 只留图标，图标钮缩小，搜索框弹性收缩，保证 360px 不横向溢出 */
+@media (max-width: 480px) {
+    .navbar-content { gap: 8px; }
+    .navbar-logo .logo-text { display: none; }
+    /* 只剩图标时扩大点击区（负边距抵消，不占额外布局空间） */
+    .navbar-logo { padding: 6px; margin: -6px; }
+    .navbar-right { flex: 1; min-width: 0; justify-content: flex-end; }
+    .navbar-search { width: auto; flex: 1; min-width: 0; padding: 0 10px; }
+    .navbar-icons { gap: 4px; }
+    .nav-icon-btn { width: 32px; height: 32px; }
+}
+
+/* 全量导航宽度测量副本：屏幕外不可见、不产生滚动溢出，仅供折叠判断量宽 */
+.nav-measure-hidden {
+    position: fixed;
+    left: -9999px;
+    top: 0;
+    visibility: hidden;
+    pointer-events: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+}
+
+/* 空间不足时收纳管理组入口的“更多”下拉 */
+.nav-more {
+    position: relative;
+    flex-shrink: 0;
+}
+
+.nav-more-toggle {
+    border: 0;
+    background: none;
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.nav-more-menu {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 140px;
+    padding: 6px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow);
+    z-index: 1001;
+}
+
+.nav-more-menu .nav-item {
+    width: 100%;
+    border-radius: var(--radius-sm);
+}

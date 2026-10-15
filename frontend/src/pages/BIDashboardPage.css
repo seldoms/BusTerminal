@@ -1,0 +1,379 @@
+/* BI 看板。深色汇报风格 + 响应式栅格，入场动画从下淡入。
+   配色用 --bi-accent（由 JSX 内联传入），保证卡片与品牌色一致。 */
+
+.bi-page {
+    min-height: 100vh;
+    padding: 24px 20px 60px;
+    background: linear-gradient(160deg, var(--bg-dark) 0%, var(--bg-darker) 100%);
+    color: var(--text-primary);
+}
+
+.bi-loading {
+    height: 50vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    color: var(--text-secondary);
+}
+
+/* ---------- 头部 ---------- */
+.bi-header {
+    max-width: 1400px;
+    margin: 0 auto 20px;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.bi-header h1 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 4px;
+    font-size: 22px;
+    color: var(--text-primary);
+}
+
+.bi-header p {
+    margin: 0;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+/* ---------- 提示条 ---------- */
+.bi-alert {
+    max-width: 1400px;
+    margin: 0 auto 16px;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 10px 14px;
+    border-radius: var(--radius);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.bi-alert.error {
+    background: rgba(239, 68, 68, 0.14);
+    color: var(--error);
+}
+
+.bi-alert.warn {
+    background: rgba(245, 158, 11, 0.14);
+    color: var(--warning);
+}
+
+/* ---------- KPI 网格 ---------- */
+.bi-kpi-grid {
+    max-width: 1400px;
+    margin: 0 auto 20px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 14px;
+}
+
+.bi-kpi {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px;
+    border-radius: var(--radius);
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--bi-accent, var(--primary));
+    animation: bi-rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+    transition: transform 0.22s ease, box-shadow 0.22s ease;
+}
+
+.bi-kpi:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.28);
+}
+
+.bi-kpi-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    flex-shrink: 0;
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--bi-accent) 18%, transparent);
+    color: var(--bi-accent);
+}
+
+.bi-kpi-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 2px;
+}
+
+.bi-kpi-value {
+    font-size: 22px;
+    font-weight: 700;
+    line-height: 1.2;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+}
+
+.bi-kpi-suffix {
+    font-size: 12px;
+    font-weight: 500;
+    margin-left: 3px;
+    color: var(--text-secondary);
+}
+
+.bi-kpi-hint {
+    margin-top: 2px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    opacity: 0.85;
+}
+
+/* ---------- 面板 ---------- */
+.bi-grid-2 {
+    max-width: 1400px;
+    margin: 0 auto 18px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+    gap: 16px;
+}
+
+.bi-panel {
+    padding: 18px;
+    border-radius: var(--radius);
+    background: var(--card);
+    border: 1px solid var(--border);
+    animation: bi-rise 0.55s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+.bi-panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 14px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+}
+
+.bi-panel-title {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.bi-tag {
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    background: var(--primary-alpha);
+    color: var(--primary);
+}
+
+.bi-chart-box {
+    height: 260px;
+    position: relative;
+}
+
+.bi-chart-doughnut {
+    height: 220px;
+}
+
+.bi-note {
+    margin: 10px 0 0;
+    font-size: 11px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+}
+
+.bi-empty {
+    height: 200px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+/* ---------- 图例 ---------- */
+.bi-legend-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 6px 14px;
+    margin-top: 12px;
+}
+
+.bi-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12px;
+}
+
+.bi-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 2px;
+    flex-shrink: 0;
+}
+
+.bi-legend-label {
+    color: var(--text-secondary);
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.bi-legend-value {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+/* ---------- 排行榜 ---------- */
+.bi-rank-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.bi-rank-list li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 0;
+    font-size: 13px;
+    border-bottom: 1px solid var(--border-light);
+    animation: bi-fade 0.4s ease backwards;
+}
+
+.bi-rank-list li:last-child {
+    border-bottom: none;
+}
+
+.bi-rank-no {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+    border-radius: 5px;
+    font-size: 11px;
+    font-weight: 700;
+    background: var(--surface-2);
+    color: var(--text-secondary);
+}
+
+.bi-rank-no.top {
+    background: var(--primary);
+    color: #171100;
+}
+
+.bi-rank-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-primary);
+}
+
+.bi-rank-value {
+    color: var(--text-secondary);
+    font-size: 12px;
+    flex-shrink: 0;
+}
+
+.bi-simple-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.bi-simple-list li {
+    padding: 6px 0;
+    font-size: 13px;
+    color: var(--text-primary);
+    border-bottom: 1px solid var(--border-light);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    animation: bi-fade 0.4s ease backwards;
+}
+
+.bi-simple-list li:last-child {
+    border-bottom: none;
+}
+
+/* ---------- 动效 ---------- */
+@keyframes bi-rise {
+    from {
+        opacity: 0;
+        transform: translateY(14px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes bi-fade {
+    from { opacity: 0; transform: translateX(-8px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+
+/* 尊重系统「减少动态效果」偏好 */
+@media (prefers-reduced-motion: reduce) {
+    .bi-kpi,
+    .bi-panel,
+    .bi-rank-list li,
+    .bi-simple-list li {
+        animation: none;
+    }
+    .bi-kpi:hover {
+        transform: none;
+    }
+}
+
+/* ---------- 响应式 ---------- */
+@media (max-width: 1024px) {
+    .bi-grid-2 {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 640px) {
+    .bi-page {
+        padding: 16px 12px 48px;
+    }
+
+    .bi-kpi-grid {
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 10px;
+    }
+
+    .bi-kpi {
+        padding: 12px;
+    }
+
+    .bi-kpi-value {
+        font-size: 18px;
+    }
+
+    .bi-chart-box {
+        height: 220px;
+    }
+
+    .bi-header {
+        flex-direction: column;
+        align-items: stretch;
+    }
+}

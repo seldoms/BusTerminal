@@ -1,0 +1,98 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+*.log
+
+# VS Code
+.vscode/
+
+# Project Specific
+movies.db
+qb_data/
+.env
+.env.*
+!.env.example
+!**/.env.example
+# 部署配置模板必须入库：它是给新用户的安装入口，
+# 被上面的 .env.* 排除会导致 clone 下来找不到模板（首次部署就卡住）。
+!.env.install.example
+!.env.fullstack.example
+.DS_Store
+data/
+backend/data/
+backend/cover_cache/
+**/cover_cache/
+*.jpg
+*.png
+*.gif
+*.webp
+# 宣传站点的图片资源必须入库：上面的 *.jpg / *.png 是为忽略封面缓存而设的宽泛规则，
+# 会把站点截图一起挡掉，导致站点图片 404（与文档截图同一个坑）。
+!site/images/*.jpg
+!site/images/*.png
+*.db
+*.tar
+*.zip
+*.backup
+*.jks
+*.keystore
+google-services.json
+backend/static/
+backend/backend.err
+backend/debug_output.txt
+frontend-redesign-demo/
+github-upload/
+scrape/
+mdcx_repo/
+mdcx_source/
+
+# Sensitive Configuration Files
+backend/jellyfin_config.ini
+backend/qb_config.ini
+*_config.ini
+!*_config.ini.example
+# 运维脚本里的连库凭据（pg_admin.env / pg_migrate.env / pg_switch.env / e2e.env）
+*.env
+!*.env.example
+!**/.env.example
+
+# 本地数据库目录与备份（体积大、含敏感数据）
+pg_data/
+*.bak_*
+.wslconfig*
+
+# Frontend
+node_modules/
+dist/
+build/
+.npm/
+
+# OS
+Thumbs.db
+
+# WorkBuddy 本地工作区（记忆、NAS 配置备份，含凭据，不入库）
+.workbuddy/
+
+# AI/agent 协作脚手架与一次性本地产物（含内部 briefings 与本机路径，不入库）
+.agents/
+_openapi.json
+wb-web/
+backend/shot_*.mjs
+*.db-shm
+*.db-wal
+pgdata/
+
+# 部署编排的本地备份（含内网地址，不入库）
+docker-compose*.bak_*
+docker-compose*.bak_before_*
+
+# ── 公开仓库追加：文档资源与前端构建配置必须入库 ──
+# 上面的 *.png / *.jpg 是为忽略封面缓存而设的宽泛规则，会连带排除文档截图，
+# 导致 README 里的图片全部 404；.env.* 则会挡住前端构建配置。
+!docs/images/*.png
+!docs/images/*.jpg
+!frontend/.env.production

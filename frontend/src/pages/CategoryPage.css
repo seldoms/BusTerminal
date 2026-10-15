@@ -1,0 +1,30 @@
+.category-page {
+    min-height: 100vh;
+}
+
+.category-page .empty-state {
+    text-align: center;
+    padding: 60px 0;
+    color: var(--text-secondary);
+    font-size: 18px;
+}
+
+.category-page .title-link {
+    text-decoration: none;
+    color: inherit;
+    display: block;
+}
+
+.category-page .movie-title {
+    color: var(--text-main) !important;
+    text-decoration: none !important;
+    margin-top: 8px;
+    font-size: 14px;
+    line-height: 1.4;
+    font-weight: 600;
+}
+
+.category-page .title-link:hover .movie-title {
+    color: var(--text-main);
+    text-decoration: none;
+}

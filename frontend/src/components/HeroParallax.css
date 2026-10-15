@@ -1,0 +1,122 @@
+/* HeroParallax.css */
+
+.hero-parallax {
+    position: relative;
+    height: 400px;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: var(--spacing-8);
+    background: linear-gradient(135deg, #fdf8f0 0%, #fef3cd 50%, #ffe69c 100%);
+    border-radius: var(--radius-lg);
+}
+
+/* Base Layer styles */
+.parallax-layer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    will-change: transform;
+}
+
+/* Layer 1: Background Gradient (Slowest) */
+.layer-bg {
+    background: radial-gradient(circle at 20% 50%, rgba(245, 158, 11, 0.12) 0%, transparent 60%),
+        radial-gradient(circle at 80% 80%, rgba(251, 191, 36, 0.10) 0%, transparent 50%);
+    opacity: 0.6;
+    z-index: 0;
+    transform: scale(1.1);
+}
+
+/* Layer 2: Floating Shapes (Mid speed) */
+.layer-mid {
+    z-index: 1;
+    pointer-events: none;
+}
+
+.shape {
+    position: absolute;
+    background: rgba(245, 158, 11, 0.06);
+    border-radius: 50%;
+}
+
+.shape-1 {
+    width: 300px;
+    height: 300px;
+    top: -50px;
+    left: 10%;
+}
+
+.shape-2 {
+    width: 200px;
+    height: 200px;
+    bottom: 20px;
+    right: 15%;
+    border: 2px solid rgba(245, 158, 11, 0.12);
+    background: transparent;
+}
+
+/* Layer 3: Content (Foreground - Normal Scroll or slightly faster/slower) */
+.layer-content {
+    position: relative;
+    z-index: 2;
+    text-align: center;
+    padding: var(--spacing-4);
+    width: 100%;
+    max-width: 800px;
+}
+
+.hero-title {
+    font-size: 3rem;
+    font-weight: 800;
+    color: var(--text-main);
+    margin-bottom: var(--spacing-4);
+    letter-spacing: -0.02em;
+    background: linear-gradient(135deg, #2d2d2d 30%, #F59E0B 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    opacity: 0;
+    animation: fadeUp 0.8s var(--ease-smooth) forwards;
+}
+
+.hero-subtitle {
+    font-size: var(--text-lg);
+    color: var(--text-muted);
+    font-weight: 400;
+    max-width: 600px;
+    margin: 0 auto;
+    opacity: 0;
+    animation: fadeUp 0.8s var(--ease-smooth) 0.2s forwards;
+}
+
+/* Fade Up Animation */
+@keyframes fadeUp {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Mobile: Disable Parallax */
+@media (max-width: 768px) {
+    .hero-parallax {
+        height: 300px;
+    }
+
+    .hero-title {
+        font-size: 2rem;
+    }
+
+    /* Reset transforms on mobile if handled by JS, but useful here too */
+    .parallax-layer {
+        transform: none !important;
+    }
+}

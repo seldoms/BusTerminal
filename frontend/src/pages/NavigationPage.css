@@ -1,0 +1,210 @@
+/* Navigation Page Styles */
+.navigation-page {
+    padding: 4px 28px 80px;
+    min-height: calc(100vh - 64px);
+    background: transparent;
+    font-family: var(--font-base);
+}
+
+.nav-container {
+    max-width: var(--container);
+    margin: 0 auto;
+}
+
+.navigation-page .page-title {
+    display: none;
+}
+
+/* Toggle Buttons */
+/* 分类切换标签与 genre 网格的间距 */
+.navigation-page .pill-tabs {
+    margin-bottom: 16px;
+}
+
+/* Genre Groups */
+.genre-group {
+    padding: 0;
+    margin: 0;
+    background: transparent;
+    border: 0;
+    box-shadow: none;
+}
+
+.genre-group-title {
+    display: none;
+}
+
+.genre-group-title::before {
+    content: '';
+    display: block;
+    width: 6px;
+    height: 24px;
+    background: var(--primary);
+    border-radius: 3px;
+    margin-right: 12px;
+}
+
+/* Genre Links Grid */
+.genre-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.genre-item {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.genre-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 34px;
+    padding: 0 14px;
+    background: var(--surface);
+    color: var(--text);
+    border-radius: 8px;
+    text-decoration: none;
+    font-size: 14px;
+    font-weight: 600;
+    transition: all 0.15s ease;
+    border: 1px solid var(--border);
+}
+
+.genre-link:hover {
+    background: var(--surface-2);
+    border-color: rgba(245, 184, 65, 0.55);
+    color: var(--brand);
+}
+
+/* Subscribe Button */
+.sub-btn {
+    margin-left: -8px;
+    /* overlap slightly */
+    z-index: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+    opacity: 0;
+    transform: translateX(-10px);
+}
+
+.genre-item:hover .sub-btn {
+    opacity: 1;
+    transform: translateX(4px);
+    margin-left: 4px;
+}
+
+.sub-btn:hover {
+    color: var(--brand);
+    border-color: var(--brand);
+}
+
+/* Popover */
+.sub-popover {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    z-index: 100;
+    background: var(--surface);
+    border-radius: 12px;
+    padding: 16px;
+    width: 260px;
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+    border: 1px solid var(--border);
+    margin-top: 10px;
+    animation: fadeIn 0.2s ease-out;
+}
+
+.sub-field {
+    margin-bottom: 12px;
+}
+
+.sub-field label {
+    display: block;
+    font-size: 12px;
+    color: var(--text-soft);
+    margin-bottom: 4px;
+}
+
+.sub-field input {
+    width: 100%;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 13px;
+    background: var(--surface-2);
+    color: var(--text);
+}
+
+.sub-field input:focus {
+    border-color: var(--primary);
+    outline: none;
+}
+
+.confirm-sub-btn {
+    width: 100%;
+    padding: 8px;
+    background: var(--brand);
+    color: #171100;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.confirm-sub-btn:hover {
+    background: var(--brand-2);
+}
+
+/* Loading State */
+.loading-state {
+    text-align: center;
+    padding: 40px 0;
+    color: var(--muted);
+    font-size: 16px;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(-5px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .genre-links {
+        justify-content: flex-start;
+    }
+
+    .navigation-page {
+        padding: 4px 16px 64px;
+    }
+}
+
+/* 触屏设备无 hover：订阅按钮常驻可见 */
+@media (hover: none) {
+    .sub-btn {
+        opacity: 1;
+        transform: none;
+        margin-left: 4px;
+    }
+}

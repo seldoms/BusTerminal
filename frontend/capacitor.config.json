@@ -1,0 +1,5 @@
+{
+  "appId": "io.github.busterminal.app",
+  "appName": "BusTerminal",
+  "webDir": "dist"
+}

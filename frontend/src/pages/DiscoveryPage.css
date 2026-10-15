@@ -1,0 +1,20 @@
+.discovery-page{min-height:100vh}
+/* 页签条吸顶。原样式有 margin-bottom:16px + padding-bottom:12px 且无内容，
+   在页签与列表之间留出一条空白带（用户反馈），已去掉；
+   sticky 必须挂在真正滚动的容器上，.poster-content-container 自身不滚，
+   滚动的是页面根，所以这里不设 sticky，避免滚一半失效。 */
+.discovery-page .toolbar{z-index:20;margin:0;padding:0;background:transparent;border-bottom:1px solid transparent}
+.discovery-page .source-warning{display:block;margin-top:10px;color:var(--warning);font-size:13px}
+.discovery-page .cache-state-notice{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 16px;padding:10px 12px;border-left:3px solid var(--warning);background:var(--surface-2);color:var(--text-soft);font-size:13px}
+.discovery-page .cache-state-notice.error{border-left-color:var(--error)}
+.discovery-page .cache-state-notice .secondary-btn{flex:0 0 auto}
+.discovery-page .movie-grid{margin-top:4px}
+.discovery-page .discovery-skeleton-poster{aspect-ratio:2/3;background:var(--surface-2);border-radius:var(--radius-md) var(--radius-md) 0 0}
+.discovery-page .loading-indicator{text-align:center;padding:20px 0;color:var(--muted)}
+.discovery-page .empty-state{border:1px dashed var(--border);border-radius:var(--radius-lg);padding:56px 24px;text-align:center;color:var(--text-soft);background:var(--surface)}
+.discovery-page .empty-state p{margin:0 0 8px;color:var(--text);font-size:18px;font-weight:700}
+.discovery-page .empty-state span{font-size:14px}
+.discovery-page .end-message{text-align:center;padding:40px 0;color:var(--muted);font-size:14px}
+@media(max-width:640px){.discovery-page .primary-btn{width:100%}
+.discovery-page .cache-state-notice{align-items:flex-start;flex-direction:column}
+.discovery-page .cache-state-notice .secondary-btn{width:100%}}

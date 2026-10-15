@@ -1,0 +1,250 @@
+.actresses-page {
+    padding-top: 0;
+    padding-bottom: 80px;
+}
+
+.actresses-page .page-header {
+    margin-bottom: 16px;
+}
+
+.actresses-page .header-actions-new {
+    display: flex;
+    justify-content: flex-start;
+    align-items: center;
+    width: 100%;
+}
+
+.actresses-page .actress-page-summary {
+    margin-top: 12px;
+    min-height: 20px;
+    color: var(--muted);
+    font-size: 13px;
+}
+
+.actresses-page .actress-card-modern {
+    overflow: hidden;
+    border-radius: var(--radius-md);
+    background: var(--card);
+    border: 1px solid var(--border);
+    position: relative;
+    transition: transform 0.2s ease, border-color 0.2s ease;
+}
+
+.actresses-page .actress-card-modern:hover {
+    transform: translateY(-4px);
+    border-color: rgba(245, 184, 65, 0.55);
+}
+
+.actresses-page .avatar-container {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    overflow: hidden;
+    background: var(--surface-2);
+    position: relative;
+}
+
+.actresses-page .avatar-container img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.actresses-page .tea-badge {
+    position: absolute;
+    left: 10px;
+    top: 10px;
+    z-index: 2;
+    height: 26px;
+    padding: 0 9px;
+    border-radius: 999px;
+    background: rgba(46, 204, 113, 0.92);
+    color: #082111;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 800;
+    line-height: 1;
+    box-shadow: 0 8px 18px rgba(0, 0, 0, 0.28);
+}
+
+.actresses-page .age-badge,
+.actresses-page .cup-badge {
+    position: absolute;
+    bottom: 10px;
+    z-index: 2;
+    height: 28px;
+    padding: 0 10px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 800;
+    line-height: 1;
+    box-shadow: 0 8px 18px rgba(0, 0, 0, 0.35);
+}
+
+.actresses-page .age-badge {
+    left: 10px;
+    min-width: 44px;
+    background: rgba(15, 17, 21, 0.78);
+    color: var(--text);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    font-size: 14px;
+}
+
+.actresses-page .cup-badge {
+    right: 10px;
+    min-width: 34px;
+    background: var(--brand);
+    color: #171100;
+    font-size: 15px;
+}
+
+.actresses-page .cup-badge.estimated {
+    background: rgba(15, 17, 21, 0.78);
+    color: var(--text);
+    border: 1px solid rgba(245, 184, 65, 0.72);
+}
+
+.actresses-page .subscription-overlay {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 36px;
+    height: 36px;
+    border-radius: 999px;
+    border: 0;
+    background: rgba(15, 17, 21, 0.72);
+    color: var(--text);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
+    z-index: 2;
+}
+
+.actresses-page .subscription-overlay:hover {
+    background: var(--card);
+    transform: scale(1.04);
+}
+
+.actresses-page .subscription-overlay.active {
+    color: var(--brand);
+}
+
+.actresses-page .actress-details-modern {
+    padding: 12px 14px 14px;
+    color: var(--text);
+}
+
+.actresses-page .actress-summary-row {
+    min-height: 24px;
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 4px 8px;
+}
+
+.actresses-page .actress-name-link {
+    color: var(--text);
+    font-size: 16px;
+    font-weight: 700;
+    line-height: 1.35;
+    text-decoration: none;
+    flex: 0 1 auto;
+    display: inline-flex;
+    align-items: center;
+    min-height: 32px; /* 移动端点击目标至少 32px 高 */
+    max-width: 5.5em;
+    white-space: nowrap;
+}
+
+.actresses-page .actress-name-link:hover {
+    color: var(--brand);
+}
+
+.actresses-page .actress-height {
+    flex: 0 0 auto;
+    font-size: 14px;
+    color: var(--text-soft);
+}
+
+.actresses-page .actress-dup-badge {
+    flex: 0 0 auto;
+    padding: 0 6px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 18px;
+    color: var(--text-soft);
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    white-space: nowrap;
+}
+
+.actresses-page .actress-birth-date {
+    min-height: 20px;
+    margin-top: 6px;
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.actresses-page .loading-state-modern,
+.actresses-page .empty-state-modern {
+    text-align: center;
+    padding: 60px 0;
+    color: var(--muted);
+}
+
+.actresses-page .loading-state-modern.compact {
+    padding: 28px 0;
+}
+
+.actresses-page .loading-spinner {
+    width: 32px;
+    height: 32px;
+    border: 3px solid var(--border);
+    border-top-color: var(--brand);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    margin: 0 auto 16px;
+}
+
+.actresses-page .empty-img {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 64px;
+    height: 64px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    color: var(--muted);
+    margin-bottom: 12px;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+@media (max-width: 900px) {
+    .actresses-page .header-actions-new {
+        grid-template-columns: 1fr;
+    }
+
+    }
+
+@media (max-width: 768px) {
+    .actresses-page {
+        padding-top: 20px;
+    }
+
+    .actresses-page .actress-name-link {
+        font-size: 15px;
+    }
+}

@@ -1,0 +1,8 @@
+# Jellyfin Configuration Example
+# Copy this file to jellyfin_config.ini and fill in your actual values
+# DO NOT commit jellyfin_config.ini to git!
+
+[jellyfin]
+host = http://your-jellyfin-host:8096
+api_key = your_api_key_here
+user_id = your_user_id_here

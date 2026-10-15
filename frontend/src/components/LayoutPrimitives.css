@@ -1,0 +1,83 @@
+.content-container {
+    width: 100%;
+    max-width: var(--content-max-width);
+    margin: 0 auto;
+    padding: 0 var(--content-padding);
+}
+
+.poster-content-container {
+    padding-top: var(--spacing-3);
+}
+
+.card-grid,
+.movie-grid,
+.movies-grid,
+.library-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(var(--card-width), var(--card-width)));
+    justify-content: center;
+    align-items: start;
+    gap: var(--grid-gap);
+    row-gap: 14px;
+    transition: var(--grid-transition);
+}
+
+.card-grid > *,
+.movie-grid > *,
+.movies-grid > *,
+.library-grid > * {
+    width: var(--card-width);
+    min-width: 0;
+}
+
+.card-grid-wide {
+    grid-template-columns: repeat(auto-fill, minmax(calc(var(--card-width) * 1.5), calc(var(--card-width) * 1.5)));
+    gap: calc(var(--grid-gap) + 16px);
+}
+
+.card-grid-wide > * {
+    width: calc(var(--card-width) * 1.5);
+}
+
+@media (max-width: 768px) {
+    .card-grid-wide {
+        grid-template-columns: 1fr;
+        justify-content: stretch;
+        gap: 20px;
+    }
+
+    .card-grid-wide > * {
+        width: 100%;
+    }
+}
+
+@media (max-width: 640px) {
+    .content-container {
+        padding-left: 12px;
+        padding-right: 12px;
+    }
+
+    .card-grid,
+    .movie-grid,
+    .movies-grid,
+    .library-grid {
+        grid-template-columns: repeat(2, minmax(0, min(44vw, 190px)));
+        gap: 12px;
+        row-gap: 12px;
+    }
+
+    .card-grid > *,
+    .movie-grid > *,
+    .movies-grid > *,
+    .library-grid > * {
+        width: auto;
+    }
+
+    .card-grid-wide {
+        grid-template-columns: 1fr;
+    }
+
+    .card-grid-wide > * {
+        width: 100%;
+    }
+}

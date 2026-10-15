@@ -1,0 +1,29 @@
+# 版本化发布镜像（离线构建）
+#
+# 背景：Docker Desktop 凭据助手异常，docker pull node:22-alpine / python:3.10-slim 会挂住，
+# 原 Dockerfile（多阶段联网构建）在这台机器上跑不通。这里改成以本机已有的应用镜像为底座，
+# 直接覆盖当前工作区的后端代码与前端打包产物，效果等价且无需联网。
+#
+# 用法：
+#   docker compose build busterminal
+#   docker compose up -d --no-build
+FROM busterminal-busterminal:latest
+
+LABEL version="1.17" \
+      description="BusTerminal 发布镜像 v1.17（含本地大模型翻译队列、只展示已处理条目）"
+
+WORKDIR /app
+
+ENV TZ=Asia/Shanghai
+
+# 后端：用当前工作区版本覆盖镜像里的旧代码（与热挂载时期跑的是同一份源码）
+COPY backend/ /app/
+RUN rm -rf /app/__pycache__
+
+# 前端：宿主已 npm run build，这里把打包产物放进镜像
+COPY frontend/dist/ /app/static/
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/live', timeout=3)"
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

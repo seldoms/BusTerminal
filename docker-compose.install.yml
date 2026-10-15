@@ -1,0 +1,114 @@
+# BusTerminal 快速部署（单容器 + 可选数据库）
+#
+# 最短路径（两条命令）：
+#   cp .env.install.example .env && vi .env     # 改密码
+#   docker compose -f docker-compose.install.yml up -d
+#   打开 http://<你的NAS地址>:8012
+#
+# 镜像默认从 GHCR 拉官方预构建版（ghcr.io/seldoms/busterminal:latest），
+# 不需要本地先 build。要改用自己构建的镜像，在 .env 里设 BUS_TERMINAL_IMAGE。
+#
+# 与仓库里其它 compose 的区别：
+#   - docker-compose.yml         本机开发用（含 139/NAS 的历史端口与本地路径）
+#   - docker-compose_nas.yml     自家 NAS 精简版
+#   - docker-compose.fullstack.yml  全栈版：连 qB / amane / Jellyfin / PG 一起装
+#   - docker-compose.run.yml/.nas.yml  早已废弃：它把前后端拆成两个容器，
+#     而现在后端会直接托管前端产物（/app/static），拆开反而跑不起来
+#   - **本文件**面向"第一次装的人"，路径与端口全部可配，默认值安全
+#
+# 首次启动必读：BUS_TERMINAL_ALLOW_SCHEMA_MIGRATION=true 不能去掉。
+# 去掉后自动建表被跳过，容器能起来但接口会报表不存在。
+
+services:
+  busterminal:
+    # GHCR 官方预构建镜像；填 BUS_TERMINAL_IMAGE 可换成自建/自定义镜像
+    image: ${BUS_TERMINAL_IMAGE:-ghcr.io/seldoms/busterminal:latest}
+    container_name: ${BUS_CONTAINER_NAME:-bus_terminal}
+    # 要自己构建时，取消注释下面两行，然后 up -d --build
+    # （构建产物会打上上面那个 image 名，两者可共存）
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    #   args:
+    #     PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
+    restart: unless-stopped
+    ports:
+      # 宿主机端口可改：BUS_TERMINAL_PORT=8012 docker compose ... up -d
+      - "${BUS_TERMINAL_BIND:-0.0.0.0}:${BUS_TERMINAL_PORT:-8012}:8000"
+    volumes:
+      # 封面缓存 + 配置 + 回退数据库。重要性能资产，删了要重新抓几千张封面。
+      - ${BUS_DATA_DIR:-./data}:/app/data
+      # qB 下载完成后的投递目录。与 qBittorrent 必须挂同一个真实目录。
+      - ${BUS_DOWNLOADS_DIR:-./downloads}:/downloads
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      - DATA_DIR=/app/data
+      # ★ 全新部署必须是 true，否则自动建表被跳过，接口报表不存在
+      - BUS_TERMINAL_ALLOW_SCHEMA_MIGRATION=${BUS_TERMINAL_ALLOW_SCHEMA_MIGRATION:-true}
+      # 登录鉴权。首次部署 true（用 /setup 建管理员）；仅局域网试用可设 false
+      - REQUIRE_AUTH=${REQUIRE_AUTH:-true}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # 数据库：留空则回退到 /app/data/movies.db（SQLite，够单机试用）
+      - DATABASE_URL=${DATABASE_URL:-}
+      - DELIVERY_FOLDER=${DELIVERY_FOLDER:-/downloads/staging}
+      # 前端同源访问，后端托管前端，默认不需要跨域
+      - CORS_ORIGINS=${CORS_ORIGINS:-}
+      # 外网抓取代理（NAS 在国内且需出网时填，例如 http://192.168.1.1:7890）
+      - SYSTEM_PROXY=${SYSTEM_PROXY:-}
+      # 内网服务是否跟随代理。生产建议 false，否则 amane/Jellyfin 会被劫持
+      - BUS_TERMINAL_INTERNAL_PROXY_ENABLED=${BUS_TERMINAL_INTERNAL_PROXY_ENABLED:-false}
+      # ---- 以下都在引导页 /setup 里填，这里保持默认即可 ----
+      - QB_HOST=${QB_HOST:-}
+      - QB_PORT=${QB_PORT:-}
+      - QB_USERNAME=${QB_USERNAME:-}
+      - QB_PASSWORD=${QB_PASSWORD:-}
+      - AMANE_BASE_URL=${AMANE_BASE_URL:-}
+      - AMANE_TOKEN=${AMANE_TOKEN:-}
+      - TRANSLATION_PROVIDER=${TRANSLATION_PROVIDER:-google_free}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-}
+    networks:
+      - bus_net
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/health/live',timeout=3)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ---- 可选：自带 PostgreSQL ----
+  # 需要 145 万级数据量、或想让 BusTerminal 独占一个库时才加 --profile with-db。
+  # 单机试用请**不要**加，默认 SQLite 足够，省一个容器。
+  bus_postgres:
+    image: pgvector/pgvector:pg16
+    container_name: ${BUS_PG_CONTAINER:-bus_postgres}
+    profiles: ["with-db"]
+    restart: unless-stopped
+    environment:
+      # ⚠️ 角色名与库名必须一致，且都叫 busterminal；改一个就都要改
+      POSTGRES_USER: ${BUS_PG_USER:-busterminal}
+      POSTGRES_DB: ${BUS_PG_DB:-busterminal}
+      POSTGRES_PASSWORD: ${BUS_PG_PASSWORD:?BUS_PG_PASSWORD 必须设置，请在 .env 里写一个强密码}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    volumes:
+      # ⚠️ 数据库放机械盘，不要放 SSD/高速缓存盘 —— 4k-fsync 写入会拖垮容器
+      - ${BUS_PG_DATA_DIR:-./pgdata}:/var/lib/postgresql/data
+    # 不对外暴露 5432：仅容器网络内可连。需要从宿主机连时改成 127.0.0.1:5432:5432
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${BUS_PG_USER:-busterminal} -d ${BUS_PG_DB:-busterminal}"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    networks:
+      - bus_net
+
+networks:
+  bus_net:
+    name: ${BUS_NETWORK_NAME:-busterminal_net}
+    driver: bridge

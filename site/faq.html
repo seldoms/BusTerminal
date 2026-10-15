@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>常见问题 — BusTerminal</title>
+<meta name="description" content="关于 BusTerminal 的常见问题：依赖、数据库、ARM 支持、端口冲突、缓存、密钥存储、升级回滚与合规边界。">
+<meta name="theme-color" content="#08080a">
+<link rel="canonical" href="https://seldoms.github.io/BusTerminal/faq.html">
+<meta property="og:type" content="article">
+<meta property="og:title" content="常见问题 — BusTerminal">
+<meta property="og:description" content="依赖、数据库、ARM、端口、缓存、密钥、升级与合规边界。">
+<meta property="og:url" content="https://seldoms.github.io/BusTerminal/faq.html">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2308080a'/%3E%3Crect x='9' y='9' width='14' height='14' rx='3' fill='%23ffc21a'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-title-key="meta.faq.title">
+
+<header class="site-header">
+  <div class="container">
+    <a class="brand" href="index.html"><span class="dot"></span>BusTerminal</a>
+    <nav class="nav">
+      <a href="features.html" data-i18n="nav.features">特性</a>
+      <a href="faq.html" class="is-active" data-i18n="nav.faq">常见问题</a>
+      <a href="https://github.com/seldoms/BusTerminal/blob/main/docs/INSTALL.md" data-i18n="nav.install">安装指南</a>
+      <a href="https://github.com/seldoms/BusTerminal">GitHub&nbsp;↗</a>
+      <button class="lang-btn" id="lang-toggle" type="button" aria-label="Switch language">EN</button>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <section class="hero slim">
+    <div class="container">
+      <p class="eyebrow" data-i18n="faq.eyebrow">常见问题</p>
+      <h1 data-i18n="faq.title">安装前，你大概想知道这些</h1>
+      <p class="lede" data-i18n="faq.lede">按决策顺序排列：依赖 → 数据库 → 部署限制 → 运维与边界。</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="container">
+      <div class="faq-list">
+
+        <details open>
+          <summary data-i18n="faq.q1">我需要先装好媒体服务器、下载器和刮削工具吗？</summary>
+          <div class="answer" data-i18n-html="faq.a1">
+            <p>不需要。它默认用 SQLite 单独就能跑，先用来检索、浏览、整理元数据。</p>
+            <p>要跑通“下载 → 整理 → 入库”闭环，再接入一个下载器、一个整理工具和一个媒体服务器 ——
+               这三者可以是你已经装好的，也可以让全栈 Compose 一起装；跑在别的机器上就填接入地址。</p>
+          </div>
+        </details>
+
+        <details>
+          <summary data-i18n="faq.q2">支持哪些数据库？</summary>
+          <div class="answer" data-i18n-html="faq.a2">
+            <p>默认 <strong>SQLite</strong>：零配置、单文件，几十万条以内够用。</p>
+            <p>生产建议 <strong>PostgreSQL</strong>，Compose 里可选启用（<code>--profile with-db</code>）。
+               媒体文件始终留在你自己的存储上，不会被搬进数据库目录。</p>
+          </div>
+        </details>
+
+        <details>
+          <summary data-i18n="faq.q3">为什么首次部署必须走完引导向导？</summary>
+          <div class="answer" data-i18n-html="faq.a3">
+            <p>未完成向导前其它页面一律不开放，这是刻意的：半配置状态（鉴权没设、服务地址空着）
+               直接暴露在网络上，正是要避免的事。</p>
+            <p>它同时也是一次配置自检 —— 走完，链路需要的东西就都到位了。</p>
+          </div>
+        </details>
+
+        <details>
+          <summary data-i18n="faq.q4">数据和缓存存在哪里？删掉会怎样？</summary>
+          <div class="answer" data-i18n-html="faq.a4">
+            <p>容器内 <code>/app/data</code> 必须持久化挂载：运行配置、封面缓存、
+               SQLite 回退库都在里面。</p>
+            <p>删掉它等于把缓存好的封面和元数据重抓一遍，可能是数 GB 流量和很长等待。
+               <strong>媒体文件不在这个目录里</strong>，不会动到你的片库。</p>
+          </div>
+        </details>
+
+        <details>
+          <summary data-i18n="faq.q5">封面缓存能清理吗？</summary>
+          <div class="answer" data-i18n-html="faq.a5">
+            <p>能，但代价明确：清掉后每次打开详情都要回源，而回源一条可能要几十秒，翻页会明显变慢。</p>
+            <p>建议把它纳入备份 —— 它属于“看着像临时文件、其实很值钱”的那一类。</p>
+          </div>
+        </details>
+
+        <details>
+          <summary data-i18n="faq.q6">支持 ARM / Apple Silicon 吗？</summary>
+          <div class="answer" data-i18n-html="faq.a6">
+            <p>官方镜像目前只构建 <strong>linux/amd64</strong>。</p>
+            <ul>
+              <li>ARM（部分 ARM NAS、Apple Silicon）需自行从源码构建镜像；</li>
+              <li>x86 模拟可以跑，但性能损失明显，不建议长期使用；</li>
+              <li>构建配置在仓库里，加一行多架构参数即可产出 ARM 镜像，欢迎提 PR。</li>
+            </ul>
+          </div>
+        </details>
+
+        <details>
+          <summary data-i18n="faq.q7">端口冲突怎么办？</summary>
+          <div class="answer" data-i18n-html="faq.a7">
+            <p>所有对外端口都在 <code>.env</code> 里可改，Compose 与镜像里没有写死。</p>
+            <p>应用默认对外 <code>8012</code>（容器内 <code>8000</code>）；全栈形态下每个服务端口
+               都能单独指定。用仓库里的 agent 提示词安装时，它会先探测端口占用，
+               再把建议端口列给你确认。</p>
+          </div>
+        </details>
+
+        <details>
+          <summary data-i18n="faq.q8">库里的密钥是明文存储的吗？</summary>
+          <div class="answer" data-i18n-html="faq.a8">
+            <p>支持加密存储：敏感配置（API Key、口令、令牌）写入时用
+               <strong>AES-256-GCM</strong> 加密，密钥来自你设置的环境变量。</p>
+            <p>一个容易误解的点：<strong>加密只发生在写入那一刻</strong>。先明文存进去、后补密钥，
+               已有记录<strong>不会</strong>被自动加密 —— 所以启动时会点名仍是明文的敏感键，
+               看到提示重新保存一次即可。</p>
+          </div>
+        </details>
+
+        <details>
+          <summary data-i18n="faq.q9">怎么升级？出问题怎么回滚？</summary>
+          <div class="answer" data-i18n-html="faq.a9">
+            <p>镜像按版本标签发布，升级就是换标签重建容器。数据在挂载卷里，与镜像版本无关：</p>
+            <ul>
+              <li>升级：拉取新标签，重建容器；</li>
+              <li>回滚：标签改回上一版，重建容器；</li>
+              <li>建议<strong>用具体版本号而不是 latest</strong>，并保留上一版镜像 —— 回滚的前提是它还在。</li>
+            </ul>
+          </div>
+        </details>
+
+        <details>
+          <summary data-i18n="faq.q10">翻译功能必须装本地大模型吗？</summary>
+          <div class="answer" data-i18n-html="faq.a10">
+            <p>不必需。翻译是可选能力：不配就不翻，其它功能照常。</p>
+            <p>要启用，需要一个兼容 OpenAI 接口的推理服务（Ollama 等），模型自己选。
+               走本地而非云端，因为量级大且文本不适合外发。</p>
+          </div>
+        </details>
+
+        <details>
+          <summary data-i18n="faq.q11">它能支撑多大的库？</summary>
+          <div class="answer" data-i18n-html="faq.a11">
+            <p>设计目标是十万条起步、六位数以上的库。</p>
+            <p>靠两件事成立：元数据与封面落库缓存，日常浏览不回源；列表页与详情页分开取数，
+               不为一条详情拖慢整页。规模再上建议切 PostgreSQL。</p>
+          </div>
+        </details>
+
+        <details>
+          <summary data-i18n="faq.q12">它和别的媒体库自动化工具会冲突吗？</summary>
+          <div class="answer" data-i18n-html="faq.a12">
+            <p>功能定位有重叠，不建议对<strong>同一个下载器实例</strong>同时做同一类调度 ——
+               两个调度器改同一个任务的状态，很容易互相打架。</p>
+            <p>确实并存时，请按标签把任务区分开。BusTerminal 用独立标签标记自己的任务。</p>
+          </div>
+        </details>
+
+        <details>
+          <summary data-i18n="faq.q13">这个项目提供内容来源吗？</summary>
+          <div class="answer" data-i18n-html="faq.a13">
+            <p><strong>不提供。</strong>它不内置、不托管、不索引任何媒体内容，也不绕过任何版权保护
+               或付费访问限制 —— 只是一套把你已有工具串起来的管理软件。</p>
+            <p>要处理什么内容、是否合法，取决于你自己，请自行确认符合所在国家和地区的法律法规。
+               软件提供屏蔽关键词，可以把不想要的内容挡在链路之外。</p>
+          </div>
+        </details>
+
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="container">
+      <div class="section-head">
+        <h2 data-i18n="faq.end.title">没找到答案？</h2>
+        <p data-i18n="faq.end.body">安装步骤与常见卡点在安装指南里；其余问题欢迎直接开 issue。</p>
+      </div>
+      <div class="cta-row" style="justify-content:flex-start">
+        <a class="btn btn-ghost" href="https://github.com/seldoms/BusTerminal/blob/main/docs/INSTALL.md" data-i18n="faq.end.cta1">安装指南</a>
+        <a class="btn btn-ghost" href="https://github.com/seldoms/BusTerminal/issues" data-i18n="faq.end.cta2">开一个 issue</a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="container">
+    <div class="footer-grid">
+      <div>
+        <h4 data-i18n="foot.project">项目</h4>
+        <ul>
+          <li><a href="https://github.com/seldoms/BusTerminal">GitHub</a></li>
+          <li><a href="https://github.com/seldoms/BusTerminal/pkgs/container/busterminal" data-i18n="foot.image">容器镜像</a></li>
+          <li><a href="https://github.com/seldoms/BusTerminal/issues" data-i18n="foot.issues">问题反馈</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4 data-i18n="foot.docs">文档</h4>
+        <ul>
+          <li><a href="index.html" data-i18n="nav.home">概览</a></li>
+          <li><a href="features.html" data-i18n="nav.features">特性</a></li>
+          <li><a href="https://github.com/seldoms/BusTerminal/blob/main/docs/CONFIGURATION.md" data-i18n="foot.config">配置说明</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4 data-i18n="foot.legal">许可与安全</h4>
+        <ul>
+          <li><a href="https://github.com/seldoms/BusTerminal/blob/main/LICENSE">GPL-3.0</a></li>
+          <li><a href="https://github.com/seldoms/BusTerminal/blob/main/SECURITY.md" data-i18n="foot.security">安全策略</a></li>
+          <li><a href="https://github.com/seldoms/BusTerminal/blob/main/NOTICE">NOTICE</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-legal">
+      <p data-i18n="foot.disclaimer">
+        BusTerminal 是一个自托管的媒体库自动化管理软件，以 GPL-3.0 许可证分发，不提供任何担保。
+        它不提供、不内置、不托管、不索引任何内容来源，也不绕过任何数字版权保护或付费访问限制。
+        软件本身不包含任何媒体内容；使用者须自行确保其下载、存储与传播行为符合所在国家和地区的法律法规，
+        并自行承担相应责任。
+      </p>
+    </div>
+  </div>
+</footer>
+
+<script src="assets/i18n.js"></script>
+<script src="assets/site.js"></script>
+</body>
+</html>

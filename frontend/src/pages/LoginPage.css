@@ -1,0 +1,115 @@
+.login-page {
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, var(--bg-dark) 0%, var(--bg-darker) 100%);
+}
+
+.login-container {
+    width: 100%;
+    max-width: 400px;
+    padding: 40px;
+    background: var(--card);
+    text-align: center;
+    box-shadow: var(--shadow);
+}
+
+.login-header {
+    margin-bottom: 30px;
+}
+
+.login-icon {
+    font-size: 48px;
+    margin-bottom: 16px;
+    display: block;
+}
+
+.login-header h1 {
+    font-size: 24px;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+}
+
+.login-header p {
+    color: var(--text-secondary);
+    font-size: 14px;
+}
+
+.login-form {
+    text-align: left;
+}
+
+.form-group {
+    margin-bottom: 20px;
+}
+
+.form-group label {
+    display: block;
+    font-size: 14px;
+    margin-bottom: 8px;
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.form-group input {
+    width: 100%;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-2);
+    color: var(--text-primary);
+    transition: var(--transition);
+}
+
+.form-group input:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px var(--primary-alpha);
+}
+
+.login-error {
+    color: var(--error);
+    font-size: 12px;
+    margin-bottom: 16px;
+}
+
+.login-btn {
+    width: 100%;
+    padding: 14px;
+    justify-content: center;
+    font-size: 16px;
+}
+
+.login-loading {
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--primary);
+    font-weight: 600;
+}
+
+.login-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.guest-btn {
+    width: 100%;
+    padding: 12px;
+    background-color: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    border-radius: var(--radius);
+    cursor: pointer;
+    font-size: 14px;
+    transition: var(--transition);
+}
+
+.guest-btn:hover {
+    background-color: var(--surface-2);
+    color: var(--primary);
+    border-color: var(--primary);
+}

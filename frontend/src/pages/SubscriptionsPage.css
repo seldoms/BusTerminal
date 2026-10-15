@@ -1,0 +1,521 @@
+/* SubscriptionsPage.css */
+
+.subscriptions-page {
+    min-height: calc(100vh - 64px);
+    background: var(--bg-body);
+    padding: 8px 0 24px;
+    font-family: var(--font-base);
+}
+
+.subscriptions-container {
+    overflow: visible;
+    min-height: 80vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.subscriptions-content {
+    padding: 8px 0 28px;
+    flex: 1;
+}
+
+/* Stats Bar */
+.stats-bar {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 10px;
+    margin-bottom: 20px;
+}
+
+.subscriptions-page .stat-card {
+    background: var(--bg-card);
+    border-radius: 10px;
+    padding: 10px 16px;
+    text-align: center;
+    border: 1px solid var(--border-base);
+    transition: var(--transition);
+}
+
+.subscriptions-page .stat-card:hover {
+    transform: translateY(-2px);
+    border-color: var(--c-400);
+    /* Use specific semantic hover color */
+    box-shadow: var(--shadow-lg);
+}
+
+.stat-number {
+    font-size: 24px;
+    font-weight: 800;
+    color: var(--primary);
+    margin-bottom: 3px;
+    line-height: 1;
+}
+
+.subscriptions-page .stat-label {
+    color: var(--text-muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+/* Group Section */
+.subscription-group {
+    margin-bottom: 32px;
+}
+
+.group-title {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--text-main);
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.group-title::before {
+    content: '';
+    display: block;
+    width: 6px;
+    height: 22px;
+    background: var(--primary);
+    border-radius: 4px;
+}
+
+.actress-card {
+    background: var(--bg-card);
+    border-radius: var(--radius-md);
+    padding: 24px;
+    border: 1px solid var(--border-base);
+    transition: var(--transition);
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-height: 280px;
+    overflow: hidden;
+    /* Prevent content overflow */
+}
+
+.actress-card:hover {
+    box-shadow: var(--shadow-xl);
+    border-color: var(--border-hover);
+    transform: translateY(-4px);
+    z-index: 10;
+}
+
+/* Fan Gallery */
+.fan-gallery {
+    height: 140px;
+    position: relative;
+    margin: -10px -10px 30px -10px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    perspective: 1000px;
+    pointer-events: none;
+    /* Let clicks pass through to card usually */
+}
+
+.fan-card {
+    position: absolute;
+    width: 90px;
+    height: 130px;
+    border-radius: 8px;
+    box-shadow: var(--shadow-md);
+    border: 2px solid var(--border-base);
+    transition: transform 0.4s cubic-bezier(0.25, 0.8, 0.25, 1);
+    transform-origin: bottom center;
+    bottom: 0;
+    background-color: var(--gray-100);
+    overflow: hidden;
+}
+
+.fan-card img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+/* Hover Animations for Fan */
+.actress-card:hover .fan-card:nth-child(1) {
+    transform: rotate(-30deg) translate(-40px, 10px);
+}
+
+.actress-card:hover .fan-card:nth-child(2) {
+    transform: rotate(-15deg) translate(-20px, -5px);
+}
+
+.actress-card:hover .fan-card:nth-child(3) {
+    transform: rotate(0deg) translate(0, -15px) scale(1.1);
+    z-index: 10;
+    box-shadow: var(--shadow-xl);
+}
+
+.actress-card:hover .fan-card:nth-child(4) {
+    transform: rotate(15deg) translate(20px, -5px);
+}
+
+.actress-card:hover .fan-card:nth-child(5) {
+    transform: rotate(30deg) translate(40px, 10px);
+}
+
+/* Static State */
+.fan-card:nth-child(1) {
+    transform: rotate(-10deg) translate(-10px, 5px);
+    z-index: 1;
+    opacity: 0.7;
+}
+
+.fan-card:nth-child(2) {
+    transform: rotate(-5deg) translate(-5px, 2px);
+    z-index: 2;
+    opacity: 0.85;
+}
+
+.fan-card:nth-child(3) {
+    transform: rotate(0deg) translate(0, 0);
+    z-index: 3;
+}
+
+.fan-card:nth-child(4) {
+    transform: rotate(5deg) translate(5px, 2px);
+    z-index: 2;
+    opacity: 0.85;
+}
+
+.fan-card:nth-child(5) {
+    transform: rotate(10deg) translate(10px, 5px);
+    z-index: 1;
+    opacity: 0.7;
+}
+
+
+/* Content */
+.actress-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 24px;
+    position: relative;
+    z-index: 11;
+    gap: 12px;
+}
+
+.actress-name {
+    font-size: 18px;
+    font-weight: 800;
+    color: var(--text-main);
+    line-height: 1.4;
+    max-width: 7em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-height: 25px;
+    min-width: 0;
+    flex-shrink: 0;
+}
+
+.status-badge {
+    padding: 4px 12px;
+    border-radius: var(--control-radius);
+    font-size: 11px;
+    font-weight: 700;
+    background: var(--bg-hover);
+    color: var(--text-muted);
+    border: 1px solid var(--border-base);
+}
+
+.status-badge.status-active {
+    background: rgba(16, 185, 129, 0.1);
+    color: var(--success);
+    border-color: rgba(16, 185, 129, 0.2);
+}
+
+.status-badge.status-refreshing {
+    background: rgba(245, 158, 11, 0.1);
+    color: var(--warning);
+    border-color: rgba(245, 158, 11, 0.2);
+    animation: pulse 1.5s infinite;
+}
+
+/* Status Indicator (Blinking Dot) */
+.status-indicator {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    position: relative;
+    flex-shrink: 0;
+}
+
+.status-indicator.status-active {
+    background: #10b981;
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+    animation: pulse-green 2s infinite;
+}
+
+.status-indicator.status-refreshing {
+    background: #f59e0b;
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.7);
+    animation: pulse-orange 1s infinite;
+}
+
+@keyframes pulse-green {
+    0% {
+        box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+    }
+
+    50% {
+        box-shadow: 0 0 0 6px rgba(16, 185, 129, 0);
+    }
+
+    100% {
+        box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+    }
+}
+
+@keyframes pulse-orange {
+    0% {
+        box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.7);
+    }
+
+    50% {
+        box-shadow: 0 0 0 6px rgba(245, 158, 11, 0);
+    }
+
+    100% {
+        box-shadow: 0 0 0 0 rgba(245, 158, 11, 0);
+    }
+}
+
+/* Download Stats */
+.download-info {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 20px;
+    padding: 12px 0;
+    margin-bottom: 20px;
+    padding: 12px 0;
+    border-top: 1px solid var(--border-base);
+    border-bottom: 1px solid var(--border-base);
+}
+
+.download-item {
+    text-align: center;
+    flex: 1;
+}
+
+.download-number {
+    font-size: 20px;
+    font-weight: 800;
+    color: var(--text-main);
+}
+
+.download-label {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 4px;
+}
+
+.last-check {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+/* Progress Bar */
+.progress-bar {
+    width: 100%;
+    height: 4px;
+    background: var(--border-light);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-bottom: 15px;
+}
+
+.progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--primary) 0%, var(--primary-hover) 100%);
+    transition: width 0.3s ease;
+    border-radius: 2px;
+}
+
+/* Button Actions - Force Horizontal */
+.card-actions {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap; /* 卡片过窄时整颗按钮换行，而不是按钮内文字断行 */
+    gap: 8px;
+    margin-top: auto;
+    width: 100%;
+}
+
+.subscriptions-page .btn {
+    padding: 8px 12px;
+    border: none;
+    border-radius: 8px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    flex: 1 1 auto;
+    /* 按钮是 display:flex，文本是匿名子项、最小宽度为 0，min-width:0 会让
+       中文被压成两行（nowrap 拦不住 flex 收缩）。fit-content 保住文字不折行。 */
+    min-width: fit-content;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.subscriptions-page .btn-primary {
+    background: var(--primary);
+    color: white;
+}
+
+.subscriptions-page .btn-primary:hover {
+    background: var(--primary-hover);
+}
+
+.subscriptions-page .btn-secondary {
+    background: var(--bg-hover);
+    color: var(--text-main);
+}
+
+.subscriptions-page .btn-secondary:hover {
+    background: #e0e0e0;
+}
+
+.subscriptions-page .btn-secondary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.subscriptions-page .btn-danger {
+    background: transparent;
+    border: 1px solid var(--error);
+    color: var(--error);
+    padding: 7px 11px;
+    /* Slightly smaller to account for border */
+}
+
+.subscriptions-page .btn-danger:hover {
+    background: var(--error);
+    color: white;
+}
+
+/* Tags */
+.card-tags {
+    margin-bottom: 15px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.mini-tag {
+    font-size: 10px;
+    background: var(--gray-700);
+    color: var(--text-muted);
+    padding: 2px 8px;
+    border-radius: 10px;
+}
+
+/* Details Overlay */
+.details-overlay {
+    background: var(--bg-body);
+    border-radius: 12px;
+    padding: 15px;
+    margin-top: 15px;
+    max-height: 200px;
+    overflow-y: auto;
+    font-size: 12px;
+    border: 1px solid var(--border-base);
+    color: var(--text-muted);
+    animation: slideDown 0.2s ease-out;
+}
+
+.subscriptions-page .detail-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border-base);
+}
+
+.subscriptions-page .detail-item.submitted {
+    color: var(--text-muted);
+    text-decoration: line-through;
+}
+
+.subscriptions-page .detail-item.pending {
+    color: var(--text-main);
+}
+
+.subscriptions-page .detail-item.failed {
+    color: var(--error);
+}
+
+@keyframes slideDown {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Responsive Design */
+@media (max-width: 1200px) {
+    .stats-bar {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+@media (max-width: 768px) {
+    .subscriptions-page {
+        padding: 8px 0 18px;
+    }
+
+    .subscriptions-content {
+        padding: 8px 0 14px;
+    }
+
+    .stats-bar {
+        grid-template-columns: 1fr;
+        gap: 8px;
+        margin-bottom: 18px;
+    }
+
+    .actress-card {
+        padding: 20px;
+    }
+}
+
+@media (max-width: 480px) {
+    .subscriptions-page {
+        padding: 6px 0 14px;
+    }
+
+    .subscriptions-content {
+        padding: 6px 0 12px;
+    }
+
+    .actress-card {
+        padding: 16px;
+    }
+
+    .card-actions {
+        flex-direction: column;
+    }
+
+    .subscriptions-page .btn {
+        width: 100%;
+    }
+}

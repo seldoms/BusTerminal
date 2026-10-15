@@ -1,0 +1,221 @@
+/* Movie Context Drawer Slide-over Styling */
+
+.drawer-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.65);
+    backdrop-filter: blur(4px);
+    z-index: 1000;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.3s ease, visibility 0.3s ease;
+}
+
+.drawer-overlay.active {
+    opacity: 1;
+    visibility: visible;
+}
+
+.drawer-panel {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 480px;
+    max-width: 90vw;
+    background: var(--surface);
+    border-left: 1px solid var(--border-light);
+    box-shadow: -10px 0 40px rgba(0, 0, 0, 0.5);
+    z-index: 1001;
+    display: flex;
+    flex-direction: column;
+    transform: translateX(100%);
+    transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    overflow: hidden;
+}
+
+.drawer-panel.active {
+    transform: translateX(0);
+}
+
+/* Header & Poster Background Banner */
+.drawer-banner-header {
+    position: relative;
+    padding: 24px;
+    background: linear-gradient(180deg, rgba(27, 31, 40, 0.4) 0%, var(--surface) 100%);
+    border-bottom: 1px solid var(--border-light);
+}
+
+.drawer-close-btn {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: var(--bg-hover);
+    border: 1px solid var(--border-light);
+    color: var(--text-main);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    z-index: 2;
+}
+
+.drawer-close-btn:hover {
+    background: var(--surface-2);
+    transform: scale(1.1);
+}
+
+.drawer-media-meta {
+    display: flex;
+    gap: 16px;
+    margin-top: 8px;
+}
+
+.drawer-poster-thumb {
+    width: 110px;
+    height: 154px;
+    object-fit: cover;
+    border-radius: 10px;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+    border: 1px solid var(--border-light);
+    flex-shrink: 0;
+}
+
+.drawer-meta-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+}
+
+.drawer-code-badge {
+    display: inline-block;
+    background: var(--primary-alpha);
+    color: var(--brand);
+    padding: 3px 8px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 700;
+    align-self: flex-start;
+    margin-bottom: 6px;
+}
+
+.drawer-title {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text-main);
+    margin: 0 0 8px 0;
+    line-height: 1.3;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.drawer-meta-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+/* Scrollable Content Body */
+.drawer-body {
+    flex: 1;
+    padding: 24px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.status-matrix-card {
+    background: var(--bg-dark);
+    border: 1px solid var(--border-light);
+    border-radius: 12px;
+    padding: 16px;
+}
+
+.matrix-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.status-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px dashed var(--border-light);
+}
+
+.status-row:last-child {
+    border-bottom: none;
+}
+
+.status-label {
+    font-size: 13px;
+    color: var(--text-main);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.status-badge {
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.status-badge.in-library {
+    background: rgba(16, 185, 129, 0.15);
+    color: #10b981;
+}
+
+.status-badge.downloading {
+    background: rgba(245, 184, 65, 0.15);
+    color: var(--brand);
+}
+
+.status-badge.not-found {
+    background: var(--surface-2);
+    color: var(--text-muted);
+}
+
+/* Action Buttons Footer */
+.drawer-actions-footer {
+    padding: 20px 24px;
+    border-top: 1px solid var(--border-light);
+    background: var(--surface);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.action-btn-row {
+    display: flex;
+    gap: 12px;
+}
+
+.flex-btn {
+    flex: 1;
+}

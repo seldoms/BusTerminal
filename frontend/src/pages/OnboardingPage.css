@@ -1,0 +1,619 @@
+/* 首次部署引导向导。颜色一律走 index.css 的主题变量，深/浅色主题都成立。 */
+
+.ob-page {
+    min-height: 100vh;
+    padding: 32px 20px 120px;
+    background: linear-gradient(135deg, var(--bg-dark) 0%, var(--bg-darker) 100%);
+    color: var(--text-primary);
+}
+
+.ob-loading {
+    height: 60vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    color: var(--text-secondary);
+}
+
+/* ---------- 头部 ---------- */
+.ob-header {
+    max-width: 960px;
+    margin: 0 auto 20px;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.ob-brand {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    color: var(--primary);
+}
+
+.ob-brand h1 {
+    font-size: 22px;
+    margin: 0 0 4px;
+    color: var(--text-primary);
+}
+
+.ob-brand p {
+    margin: 0;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.ob-reentry-badge {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border-radius: 999px;
+    font-size: 12px;
+    background: rgba(16, 185, 129, 0.14);
+    color: var(--success);
+}
+
+/* ---------- 步骤条 ---------- */
+.ob-steps {
+    max-width: 960px;
+    margin: 0 auto 18px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.ob-step {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--card);
+    color: var(--text-secondary);
+    font-size: 13px;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.ob-step:hover {
+    border-color: var(--primary);
+    color: var(--primary);
+}
+
+.ob-step.active {
+    border-color: var(--primary);
+    background: var(--primary-alpha);
+    color: var(--primary);
+    font-weight: 600;
+}
+
+.ob-step.done {
+    color: var(--success);
+    border-color: rgba(16, 185, 129, 0.4);
+}
+
+.ob-step-check {
+    color: var(--success);
+}
+
+/* ---------- 主面板 ---------- */
+.ob-panel {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 24px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+}
+
+.ob-section {
+    margin-bottom: 26px;
+}
+
+.ob-section:last-child {
+    margin-bottom: 0;
+}
+
+.ob-section h3 {
+    font-size: 14px;
+    margin: 0 0 12px;
+    color: var(--text-primary);
+}
+
+/* ---------- 表单 ---------- */
+.ob-grid-2 {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 14px;
+}
+
+.ob-grid-3 {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 14px;
+}
+
+.ob-field {
+    margin-bottom: 14px;
+}
+
+.ob-label {
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
+    margin-bottom: 6px;
+    color: var(--text-primary);
+}
+
+.ob-required {
+    color: var(--error);
+    margin-left: 4px;
+}
+
+.ob-input,
+.ob-textarea {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-2);
+    color: var(--text-primary);
+    font-size: 14px;
+    font-family: inherit;
+    transition: var(--transition);
+}
+
+.ob-textarea {
+    resize: vertical;
+    min-height: 120px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.ob-input:focus,
+.ob-textarea:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px var(--primary-alpha);
+}
+
+select.ob-input {
+    cursor: pointer;
+}
+
+.ob-hint {
+    margin-top: 5px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+/* ---------- 开关 ---------- */
+.ob-toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border-light);
+}
+
+.ob-toggle-text {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.ob-toggle-label {
+    font-size: 14px;
+    color: var(--text-primary);
+}
+
+.ob-toggle-help {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.ob-switch {
+    position: relative;
+    display: inline-block;
+    width: 44px;
+    height: 24px;
+    flex-shrink: 0;
+}
+
+.ob-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.ob-switch-slider {
+    position: absolute;
+    inset: 0;
+    background: var(--border);
+    border-radius: 999px;
+    transition: var(--transition);
+    cursor: pointer;
+}
+
+.ob-switch-slider::before {
+    content: '';
+    position: absolute;
+    width: 18px;
+    height: 18px;
+    left: 3px;
+    top: 3px;
+    background: #fff;
+    border-radius: 50%;
+    transition: var(--transition);
+}
+
+.ob-switch input:checked + .ob-switch-slider {
+    background: var(--primary);
+}
+
+.ob-switch input:checked + .ob-switch-slider::before {
+    transform: translateX(20px);
+}
+
+/* ---------- 提示条 ---------- */
+.ob-alert {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 10px 14px;
+    border-radius: var(--radius);
+    font-size: 13px;
+    line-height: 1.6;
+    margin-bottom: 14px;
+}
+
+.ob-alert svg {
+    flex-shrink: 0;
+    margin-top: 2px;
+}
+
+.ob-alert.info {
+    background: var(--primary-alpha);
+    color: var(--text-primary);
+}
+
+.ob-alert.warn {
+    background: rgba(245, 158, 11, 0.14);
+    color: var(--warning);
+}
+
+.ob-alert.error {
+    background: rgba(239, 68, 68, 0.14);
+    color: var(--error);
+}
+
+.ob-alert code,
+.ob-preview code {
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.25);
+    font-size: 12px;
+}
+
+/* ---------- 连通性测试 ---------- */
+.ob-probe {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+}
+
+.ob-probe-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.ob-probe-result {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+}
+
+.ob-probe-result.ok {
+    color: var(--success);
+}
+
+.ob-probe-result.fail {
+    color: var(--error);
+}
+
+/* ---------- 屏蔽词 ---------- */
+.ob-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 10px 0;
+}
+
+.ob-chip {
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    background: var(--primary-alpha);
+    color: var(--primary);
+    border: 1px solid var(--primary);
+}
+
+.ob-chip.small {
+    padding: 1px 8px;
+    font-size: 11px;
+    margin-left: 8px;
+}
+
+.ob-inline-actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+}
+
+.ob-preview {
+    margin-top: 12px;
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-2);
+}
+
+.ob-preview-title {
+    font-size: 13px;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+}
+
+.ob-preview-list {
+    margin: 0;
+    padding-left: 18px;
+    max-height: 260px;
+    overflow-y: auto;
+}
+
+.ob-preview-list li {
+    font-size: 12px;
+    color: var(--text-secondary);
+    padding: 3px 0;
+    line-height: 1.5;
+}
+
+.ob-preview-title-text {
+    color: var(--text-primary);
+}
+
+/* ---------- 数据库体检 ---------- */
+.ob-dbcheck {
+    margin-top: 12px;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-2);
+}
+
+.ob-dbcheck-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 6px 0;
+    font-size: 13px;
+    color: var(--text-primary);
+}
+
+.ob-dbcheck-row code {
+    font-size: 12px;
+    color: var(--text-secondary);
+    word-break: break-all;
+}
+
+.ob-dbcheck-label {
+    color: var(--text-secondary);
+    flex-shrink: 0;
+}
+
+.ob-dbcheck-row .ok {
+    color: var(--success);
+    font-weight: 600;
+}
+
+.ob-dbcheck-row .fail {
+    color: var(--error);
+    font-weight: 600;
+}
+
+.ob-dbcheck-counts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    gap: 10px;
+    margin-top: 10px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+}
+
+.ob-dbcheck-count {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.ob-dbcheck-count strong {
+    font-size: 15px;
+    color: var(--text-primary);
+}
+
+.ob-dbcheck .ob-alert {
+    margin: 12px 0 0;
+}
+
+/* ---------- 能力提示 ---------- */
+.ob-capabilities {
+    padding: 16px;
+    margin-bottom: 22px;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--primary);
+    border-radius: var(--radius);
+    background: var(--surface-2);
+}
+
+.ob-cap-headline {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 12px;
+}
+
+.ob-cap-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 10px;
+}
+
+.ob-cap-item {
+    padding: 10px 12px;
+    border-radius: var(--radius);
+    background: var(--card);
+    border: 1px solid var(--border-light);
+}
+
+.ob-cap-item.pending {
+    opacity: 0.82;
+}
+
+.ob-cap-item-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 4px;
+}
+
+.ob-cap-item-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.ob-cap-item-detail {
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+}
+
+.ob-cap-badge {
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.ob-cap-badge.ready {
+    background: rgba(16, 185, 129, 0.16);
+    color: var(--success);
+}
+
+.ob-cap-badge.pending {
+    background: rgba(245, 158, 11, 0.16);
+    color: var(--warning);
+}
+
+.ob-cap-footnote,
+.ob-step-hint {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--border);
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+}
+
+.ob-step-hint {
+    border-top: none;
+    margin-top: 6px;
+    padding-top: 0;
+    color: var(--primary);
+}
+
+/* ---------- 能力总览 ---------- */
+.ob-overview-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 12px;
+    margin-bottom: 18px;
+}
+
+.ob-overview-card {
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--card);
+}
+
+.ob-overview-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--primary);
+    margin-bottom: 5px;
+}
+
+.ob-overview-summary {
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+}
+
+/* ---------- 底部 ---------- */
+.ob-footer {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 24px;
+    background: var(--card);
+    border-top: 1px solid var(--border);
+}
+
+.ob-footer-right {
+    display: flex;
+    gap: 10px;
+}
+
+@media (max-width: 640px) {
+    .ob-page {
+        padding: 20px 12px 140px;
+    }
+
+    .ob-panel {
+        padding: 16px;
+    }
+
+    .ob-footer {
+        padding: 12px 14px;
+    }
+
+    .ob-step-label {
+        display: none;
+    }
+}

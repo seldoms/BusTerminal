@@ -1,0 +1,9 @@
+.home-page {
+    min-height: 100vh;
+}
+
+.home-page-header {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 1rem;
+}

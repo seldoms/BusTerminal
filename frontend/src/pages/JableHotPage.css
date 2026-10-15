@@ -1,0 +1,83 @@
+.jable-hot-page {
+    min-height: 100vh;
+    padding: 0 0 40px;
+}
+
+.jable-hot-page .page-header {
+    display: flex;
+    align-items: center;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.jable-hot-page .header-actions {
+    display: flex;
+    align-items: center;
+    width: 100%;
+}
+
+.jable-hot-page .jable-skeleton-poster {
+    padding-top: 56.25% !important;
+    /* Force 16:9 for Jable skeletons */
+}
+
+/* 影片网格 - 适应横向封面 */
+.jable-hot-page .movies-grid {
+    margin-bottom: 18px;
+}
+
+.jable-hot-page .loading-indicator {
+    text-align: center;
+    padding: 3rem;
+    color: var(--text-secondary);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+}
+
+.jable-hot-page .spinner {
+    width: 32px;
+    height: 32px;
+    border: 3px solid rgba(255, 255, 255, 0.1);
+    border-top-color: var(--primary);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.jable-hot-page .end-message {
+    text-align: center;
+    padding: 4rem 2rem;
+    color: var(--text-muted);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+    border-top: 1px solid var(--border-color);
+    margin-top: 2rem;
+}
+
+.jable-hot-page .end-message i {
+    font-size: 22px;
+    color: var(--success);
+    opacity: 0.8;
+}
+
+.jable-hot-page .empty-state {
+    text-align: center;
+    padding: 6rem 2rem;
+    color: var(--text-secondary);
+}
+
+.jable-hot-page .empty-state i {
+    font-size: 4rem;
+    margin-bottom: 1.5rem;
+    opacity: 0.3;
+}
