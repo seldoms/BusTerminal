@@ -131,7 +131,7 @@ docker compose -f docker-compose.fullstack.yml up -d
 
 ## 技术栈
 
-- **后端**：Python 3.13 · FastAPI · Uvicorn
+- **后端**：Python 3.12 · FastAPI · Uvicorn
 - **前端**：React 18 · Vite · Chart.js
 - **数据库**：PostgreSQL 16（未配置时回退 SQLite）
 - **部署**：Docker / Docker Compose，单容器即可运行（后端直接托管前端产物）

@@ -133,7 +133,7 @@ it only makes decisions and keeps an index.
 
 ## Tech stack
 
-- **Backend**: Python 3.13 · FastAPI · Uvicorn
+- **Backend**: Python 3.12 · FastAPI · Uvicorn
 - **Frontend**: React 18 · Vite · Chart.js
 - **Database**: PostgreSQL 16 (SQLite fallback when unset)
 - **Deployment**: Docker / Docker Compose — a single container is enough

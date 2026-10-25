@@ -402,6 +402,24 @@ docker compose -f docker-compose.install.yml up -d --build
 国内网络直连 pypi.org 可能失败，compose 里已默认走清华源。需要换源时改
 `PIP_INDEX_URL` 为你可达的镜像。
 
+### E-1 源码直跑后端（不用 Docker，可复现安装）
+
+运行时口径统一为 **Python 3.12**。后端依赖已全量锁定在
+`backend/requirements.lock`（含间接依赖），按锁文件安装，装到的就是
+已验证过的同一套版本，不会因为上游发新版而某天突然装坏：
+
+```bash
+cd backend
+python3.12 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.lock
+python -c "import main"          # 冒烟：能 import 即依赖与代码对齐
+uvicorn main:app --port 8000
+```
+
+日常改依赖时改的是 `backend/requirements.txt`（那里只写直接依赖的
+可接受区间）；改完在干净 venv 里重新生成 lock 并跑 `pytest -q` 全绿后
+再提交，不要手改 lock 文件。
+
 ---
 
 ## 场景 F：全栈一键（应用 + 数据库 + 下载器 + 刮削 + 媒体库）

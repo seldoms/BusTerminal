@@ -1,18 +1,25 @@
-fastapi
-uvicorn
+# BusTerminal 后端直接依赖（运行时口径：Python 3.12）
+#
+# 版本策略（见 Issue #1）：这里只写“可接受区间”——下限是已验证版本，
+# 上限卡住下一次可能不兼容的大版本/次版本；真正可复现的安装请用同目录的
+# requirements.lock（pip freeze 全量锁定，含间接依赖）：
+#   pip install -r requirements.lock
+# Docker 镜像与文档里的可复现安装都走 lock 文件。
+fastapi>=0.162,<0.170
+uvicorn>=0.54,<0.60
+pydantic>=2.14,<3
+httpx>=0.28,<0.29
 requests>=2.32,<3
 urllib3>=2,<3
 charset-normalizer>=3,<4
-beautifulsoup4
-httpx
-pydantic
-pycryptodome
-pillow
-deep-translator
-opencc-python-reimplemented
-baidu-translate-api
-python-dotenv
-psycopg2-binary
-Wikipedia-API
-scrapling[fetchers]
-pytest
+beautifulsoup4>=4.15,<5
+pycryptodome>=4.2,<5
+pillow>=13,<14
+deep-translator>=1.11,<2
+opencc-python-reimplemented>=0.1.7,<0.2
+baidu-translate-api>=1.0,<2
+python-dotenv>=1.2,<2
+psycopg2-binary>=2.9,<3
+Wikipedia-API>=0.16,<1
+scrapling[fetchers]>=0.5,<0.6
+pytest>=9.1,<10
