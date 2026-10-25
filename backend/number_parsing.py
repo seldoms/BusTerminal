@@ -32,9 +32,9 @@ from typing import TypedDict
 
 try:  # Python 3.11+
     from enum import StrEnum
-except ImportError:  # 生产镜像底座是 python:3.10-slim，没有 enum.StrEnum
+except ImportError:  # Python < 3.11 没有 enum.StrEnum（现行运行时为 3.12，此回退仅作兼容保留）
     class StrEnum(str, Enum):  # type: ignore[no-redef]
-        """3.10 兼容版：str() 返回 value，与 3.11 的 enum.StrEnum 行为一致。"""
+        """旧版兼容实现：str() 返回 value，与 3.11 的 enum.StrEnum 行为一致。"""
 
         def __str__(self) -> str:
             return str(self.value)
@@ -438,7 +438,7 @@ def _match(basename: str, escape_strings: list[str], *, generic: bool) -> tuple[
 
     if "MYWIFE" in c and re.search(r"NO\.\d*", c):
         # 注意：f-string 表达式内不能出现反斜杠（Python 3.12 前是语法错误），
-        # 生产镜像是 python:3.10，正则必须先算好再插值。
+        # 为兼容旧版本该写法保留：正则先算好再插值。
         mywife_no = re.findall(r"NO\.(\d*)", c)[0]
         return f"Mywife No.{mywife_no}", ContentType.CENSORED
     if m := re.search(r"CW3D2D?BD-?\d{2,}", c):

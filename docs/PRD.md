@@ -80,7 +80,7 @@ v1.0 成稿于 2026-07-24，此后系统在数据存储、后台任务、页面�
 
 ```mermaid
 graph TD
-    Client["前端 Web UI (Vite + React 18)"] -->|HTTP / REST API| Backend["后端 FastAPI 服务 (Python 3.10)"]
+    Client["前端 Web UI (Vite + React 18)"] -->|HTTP / REST API| Backend["后端 FastAPI 服务 (Python 3.12)"]
     Client -->|Android 外壳| Android["Capacitor Android"]
     Backend -->|PG 协议| DB[("专属 PostgreSQL 16 (bus_postgres)")]
     Backend -.->|回退路径| DBLegacy[("SQLite (data/movies.db, WAL)")]
@@ -107,7 +107,7 @@ graph TD
 | 层 | 技术 |
 | --- | --- |
 | 前端 | React 18、React Router 6、Vite 5、Axios、lucide-react、Chart.js + react-chartjs-2、date-fns、Vanilla CSS（CSS 变量 + 明/暗双主题） |
-| 后端 | Python 3.10、FastAPI、Uvicorn、psycopg2（连接池）、requests/httpx、BeautifulSoup4、Scrapling（无头浏览器回退）、Pillow、deep-translator、opencc |
+| 后端 | Python 3.12、FastAPI、Uvicorn、psycopg2（连接池）、requests/httpx、BeautifulSoup4、Scrapling（无头浏览器回退）、Pillow、deep-translator、opencc |
 | 存储 | PostgreSQL 16（主）/ SQLite WAL（回退）；`cover_cache` 磁盘图片缓存 |
 | 集成 | qBittorrent Web API、Jellyfin REST API + Webhook、Ollama / 百度翻译 / Google 免费翻译 |
 | 部署 | Docker、Docker Compose、Nginx（前端容器镜像内） |
