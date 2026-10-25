@@ -90,6 +90,10 @@ pgdata/
 docker-compose*.bak_*
 docker-compose*.bak_before_*
 
+# 个人环境离线构建变通文件：内容已归档至 docs/personal-build-memo.md，
+# 根目录不再入库，避免新用户误以为这是受支持的构建路径（见 Issue #2）。
+Dockerfile.release
+
 # ── 公开仓库追加：文档资源与前端构建配置必须入库 ──
 # 上面的 *.png / *.jpg 是为忽略封面缓存而设的宽泛规则，会连带排除文档截图，
 # 导致 README 里的图片全部 404；.env.* 则会挡住前端构建配置。

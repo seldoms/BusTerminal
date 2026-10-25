@@ -30,9 +30,9 @@ movies.db
 *.zip
 
 frontend/node_modules
-# 原 Dockerfile 在镜像内构建前端，故排除 dist；Dockerfile.release 直接复用宿主构建产物，这里放开
+# 标准 Dockerfile 在镜像内构建前端，故排除宿主 dist
+# （原先为 Dockerfile.release 复用宿主产物而放开；该文件已移出仓库，见 docs/personal-build-memo.md）
 frontend/dist
-!frontend/dist
 frontend/build
 frontend/.npm
 frontend/android
@@ -44,3 +44,8 @@ github-upload
 mdcx_repo
 mdcx_source
 scrape
+
+# 仓库整洁（Issue #3）：一次性维护脚本归档与后端 mock 不进生产镜像构建上下文。
+# 标准 Dockerfile 用 COPY backend/ . 拷贝后端，backend/*_mock.py 在此排除后不会被拷入镜像。
+scripts
+backend/*_mock.py
