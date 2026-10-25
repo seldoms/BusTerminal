@@ -921,7 +921,7 @@ def start_background_task(
 async def get_jable_hot_movies(
     page: int = Query(1, ge=1, description="椤电爜"),
     limit: int = Query(30, ge=10, le=60, description="姣忛〉鏁伴噺"),
-    sort_by: str = Query("video_viewed", enum=["video_viewed", "video_viewed_month", "video_viewed_week", "video_viewed_today", "post_date"], description="鎺掑簭鏂瑰紡"),
+    sort_by: str = Query("video_viewed", pattern="^(video_viewed|video_viewed_month|video_viewed_week|video_viewed_today|post_date)$", description="鎺掑簭鏂瑰紡"),
     force_refresh: bool = Query(False, description="鏄惁寮哄埗鍒锋柊"),
     translate: bool = Query(True, description="鏄惁缈昏瘧鏍囬")
 ):

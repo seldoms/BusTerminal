@@ -1,6 +1,7 @@
 """gfriends 头像同步单测（全部离线，不发网络请求）。"""
 
 import os
+import random
 import sys
 from pathlib import Path
 
@@ -26,8 +27,11 @@ class _FakeDb:
     def get_config(self, key):
         return None
 
-    def get_actresses_missing_avatar(self, limit=None):
-        return self.rows if not limit else self.rows[:limit]
+    def get_actresses_missing_avatar(self, limit=None, randomize=False):
+        rows = list(self.rows)
+        if randomize:
+            random.shuffle(rows)
+        return rows if not limit else rows[:limit]
 
     def update_actress_avatars(self, updates):
         self.updates = list(updates)
