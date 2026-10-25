@@ -13,6 +13,7 @@
 <meta property="og:url" content="https://seldoms.github.io/BusTerminal/faq.html">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2308080a'/%3E%3Crect x='9' y='9' width='14' height='14' rx='3' fill='%23ffc21a'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="assets/style.css">
+<script>document.documentElement.className += ' js';</script>
 </head>
 <body data-title-key="meta.faq.title">
 
@@ -32,7 +33,7 @@
 <main>
 
   <section class="hero slim">
-    <div class="container">
+    <div class="container reveal">
       <p class="eyebrow" data-i18n="faq.eyebrow">常见问题</p>
       <h1 data-i18n="faq.title">安装前，你大概想知道这些</h1>
       <p class="lede" data-i18n="faq.lede">按决策顺序排列：依赖 → 数据库 → 部署限制 → 运维与边界。</p>
@@ -43,7 +44,7 @@
     <div class="container">
       <div class="faq-list">
 
-        <details open>
+        <details class="reveal" open>
           <summary data-i18n="faq.q1">我需要先装好媒体服务器、下载器和刮削工具吗？</summary>
           <div class="answer" data-i18n-html="faq.a1">
             <p>不需要。它默认用 SQLite 单独就能跑，先用来检索、浏览、整理元数据。</p>
@@ -52,7 +53,7 @@
           </div>
         </details>
 
-        <details>
+        <details class="reveal">
           <summary data-i18n="faq.q2">支持哪些数据库？</summary>
           <div class="answer" data-i18n-html="faq.a2">
             <p>默认 <strong>SQLite</strong>：零配置、单文件，几十万条以内够用。</p>
@@ -61,7 +62,7 @@
           </div>
         </details>
 
-        <details>
+        <details class="reveal">
           <summary data-i18n="faq.q3">为什么首次部署必须走完引导向导？</summary>
           <div class="answer" data-i18n-html="faq.a3">
             <p>未完成向导前其它页面一律不开放，这是刻意的：半配置状态（鉴权没设、服务地址空着）
@@ -70,7 +71,7 @@
           </div>
         </details>
 
-        <details>
+        <details class="reveal">
           <summary data-i18n="faq.q4">数据和缓存存在哪里？删掉会怎样？</summary>
           <div class="answer" data-i18n-html="faq.a4">
             <p>容器内 <code>/app/data</code> 必须持久化挂载：运行配置、封面缓存、
@@ -80,7 +81,7 @@
           </div>
         </details>
 
-        <details>
+        <details class="reveal">
           <summary data-i18n="faq.q5">封面缓存能清理吗？</summary>
           <div class="answer" data-i18n-html="faq.a5">
             <p>能，但代价明确：清掉后每次打开详情都要回源，而回源一条可能要几十秒，翻页会明显变慢。</p>
@@ -88,7 +89,7 @@
           </div>
         </details>
 
-        <details>
+        <details class="reveal">
           <summary data-i18n="faq.q6">支持 ARM / Apple Silicon 吗？</summary>
           <div class="answer" data-i18n-html="faq.a6">
             <p>官方镜像目前只构建 <strong>linux/amd64</strong>。</p>
@@ -100,7 +101,7 @@
           </div>
         </details>
 
-        <details>
+        <details class="reveal">
           <summary data-i18n="faq.q7">端口冲突怎么办？</summary>
           <div class="answer" data-i18n-html="faq.a7">
             <p>所有对外端口都在 <code>.env</code> 里可改，Compose 与镜像里没有写死。</p>
@@ -110,7 +111,7 @@
           </div>
         </details>
 
-        <details>
+        <details class="reveal">
           <summary data-i18n="faq.q8">库里的密钥是明文存储的吗？</summary>
           <div class="answer" data-i18n-html="faq.a8">
             <p>支持加密存储：敏感配置（API Key、口令、令牌）写入时用
@@ -121,7 +122,7 @@
           </div>
         </details>
 
-        <details>
+        <details class="reveal">
           <summary data-i18n="faq.q9">怎么升级？出问题怎么回滚？</summary>
           <div class="answer" data-i18n-html="faq.a9">
             <p>镜像按版本标签发布，升级就是换标签重建容器。数据在挂载卷里，与镜像版本无关：</p>
@@ -133,7 +134,7 @@
           </div>
         </details>
 
-        <details>
+        <details class="reveal">
           <summary data-i18n="faq.q10">翻译功能必须装本地大模型吗？</summary>
           <div class="answer" data-i18n-html="faq.a10">
             <p>不必需。翻译是可选能力：不配就不翻，其它功能照常。</p>
@@ -142,7 +143,7 @@
           </div>
         </details>
 
-        <details>
+        <details class="reveal">
           <summary data-i18n="faq.q11">它能支撑多大的库？</summary>
           <div class="answer" data-i18n-html="faq.a11">
             <p>设计目标是十万条起步、六位数以上的库。</p>
@@ -151,7 +152,7 @@
           </div>
         </details>
 
-        <details>
+        <details class="reveal">
           <summary data-i18n="faq.q12">它和别的媒体库自动化工具会冲突吗？</summary>
           <div class="answer" data-i18n-html="faq.a12">
             <p>功能定位有重叠，不建议对<strong>同一个下载器实例</strong>同时做同一类调度 ——
@@ -160,7 +161,7 @@
           </div>
         </details>
 
-        <details>
+        <details class="reveal">
           <summary data-i18n="faq.q13">这个项目提供内容来源吗？</summary>
           <div class="answer" data-i18n-html="faq.a13">
             <p><strong>不提供。</strong>它不内置、不托管、不索引任何媒体内容，也不绕过任何版权保护

@@ -13,6 +13,7 @@
 <meta property="og:url" content="https://seldoms.github.io/BusTerminal/features.html">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2308080a'/%3E%3Crect x='9' y='9' width='14' height='14' rx='3' fill='%23ffc21a'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="assets/style.css">
+<script>document.documentElement.className += ' js';</script>
 </head>
 <body data-title-key="meta.features.title">
 
@@ -32,7 +33,7 @@
 <main>
 
   <section class="hero slim">
-    <div class="container">
+    <div class="container reveal">
       <p class="eyebrow" data-i18n="feat.eyebrow">特性详解</p>
       <h1 data-i18n="feat.title">每一段链路，都留下状态</h1>
       <p class="lede" data-i18n="feat.lede">按链路顺序展开。每节讲三件事：解决什么、怎么工作、为什么这样设计。</p>
@@ -45,11 +46,11 @@
 
   <section>
     <div class="container">
-      <div class="section-head">
+      <div class="section-head reveal">
         <p class="eyebrow" data-i18n="feat.1.eyebrow">01 / 发现</p>
         <h2 data-i18n="feat.1.t">发现与元数据缓存</h2>
       </div>
-      <div class="grid cols-2">
+      <div class="grid cols-2 reveal">
         <div>
           <p data-i18n="feat.1.p1">配置里启用多个来源，按编号统一检索、聚合去重；不启用的来源完全不参与链路。</p>
           <p data-i18n="feat.1.p2">元数据与封面首次抓取后落库，之后浏览、翻页、看详情全是本地读 —— 回源抓一次详情往往要几十秒，而成熟库是六位数起步。</p>
@@ -68,11 +69,11 @@
 
   <section>
     <div class="container">
-      <div class="section-head">
+      <div class="section-head reveal">
         <p class="eyebrow" data-i18n="feat.2.eyebrow">02 / 翻译</p>
         <h2 data-i18n="feat.2.t">标题中文化</h2>
       </div>
-      <div class="grid cols-2">
+      <div class="grid cols-2 reveal">
         <div>
           <p data-i18n="feat.2.p1">用本地大模型批量翻译，支持后台回填历史数据。走本地而非云端：量级上百万条，内容本身也不适合外发。</p>
           <p data-i18n-html="feat.2.p2">翻译带<strong>质量闸</strong>。厂牌名、专有名词被字面直译成不相干的词，比原文更难读 —— 不合格的译文直接丢弃，保留原文。</p>
@@ -92,11 +93,11 @@
 
   <section>
     <div class="container">
-      <div class="section-head">
+      <div class="section-head reveal">
         <p class="eyebrow" data-i18n="feat.3.eyebrow">03 / 下载</p>
         <h2 data-i18n="feat.3.t">磁链与下载调度</h2>
       </div>
-      <div class="grid cols-2">
+      <div class="grid cols-2 reveal">
         <div>
           <p data-i18n="feat.3.p1">按可用性、体积、来源列出候选磁链，选中后下发给你自己的下载器，并在库内记下“谁下的、下到哪、什么状态”。</p>
           <p data-i18n="feat.3.p2">下载不是终点。做种达标后自动投放进整理入口，停在哪儿、为什么停，界面上都能看到。</p>
@@ -115,7 +116,7 @@
 
   <section>
     <div class="container">
-      <div class="section-head">
+      <div class="section-head reveal">
         <p class="eyebrow" data-i18n="feat.4.eyebrow">04 / 入库</p>
         <h2 data-i18n="feat.4.t">入库闭环</h2>
       </div>
@@ -142,11 +143,11 @@
 
   <section>
     <div class="container">
-      <div class="section-head">
+      <div class="section-head reveal">
         <p class="eyebrow" data-i18n="feat.5.eyebrow">05 / 维护</p>
         <h2 data-i18n="feat.5.t">库状态与清理</h2>
       </div>
-      <div class="grid cols-3">
+      <div class="grid cols-3 reveal">
         <article class="card icon">
           <h3 data-i18n="feat.5.1.t">本地文件清单</h3>
           <p data-i18n="feat.5.1.d">实体文件与元数据对齐，哪些条目只有记录、没有文件，一眼可见。</p>
@@ -165,11 +166,11 @@
 
   <section>
     <div class="container">
-      <div class="section-head">
+      <div class="section-head reveal">
         <p class="eyebrow" data-i18n="feat.6.eyebrow">06 / 部署</p>
         <h2 data-i18n="feat.6.t">部署与凭据安全</h2>
       </div>
-      <div class="grid cols-2">
+      <div class="grid cols-2 reveal">
         <div>
           <p data-i18n="feat.6.p1">首次启动进入引导向导，把接口授权、下载习惯、屏蔽词、缓存策略一次配齐；未完成向导前其它页面不开放。</p>
           <p data-i18n="feat.6.p2">鉴权可开关；库内敏感配置（API Key、口令、令牌）支持加密存储，启动时检测明文凭据并提示，不静默放过。</p>
@@ -189,7 +190,7 @@
 
   <section>
     <div class="container">
-      <div class="section-head">
+      <div class="section-head reveal">
         <p class="eyebrow" data-i18n="feat.7.eyebrow">07 / 接口</p>
         <h2 data-i18n="feat.7.t">可观测性与 API</h2>
       </div>
@@ -202,11 +203,11 @@
 
   <section>
     <div class="container">
-      <div class="section-head">
+      <div class="section-head reveal">
         <h2 data-i18n="feat.end.title">装到你自己的机器上</h2>
         <p data-i18n="feat.end.body">官方镜像在 GHCR，一行命令启动；也可以让 AI agent 帮你把整套装齐。</p>
       </div>
-      <div class="cta-row" style="justify-content:flex-start">
+      <div class="cta-row reveal" style="justify-content:flex-start">
         <a class="btn btn-primary" href="index.html#start" data-i18n="feat.end.cta1">开始安装</a>
         <a class="btn btn-ghost" href="https://github.com/seldoms/BusTerminal">GitHub&nbsp;↗</a>
       </div>
