@@ -700,3 +700,19 @@ h2.big { font-size: clamp(30px, 4.6vw, 44px); font-weight: 800; letter-spacing: 
   .loop-ring .ring-fg { stroke-dashoffset: 0; }
   .js .trust-lines path { stroke-dashoffset: 0; }
 }
+
+/* ---------- 迭代二：真实截图整合 + 子页统一 ---------- */
+.frame.tilt { transform: rotateX(7deg); transform-origin: 50% 100%; transition: transform 1.2s cubic-bezier(.2,.7,.2,1); }
+.hero-stage.inview .frame.tilt { transform: rotateX(0deg); }
+.frame img.shot-img { display: block; }
+.feature-row .shot { align-self: center; }
+.shot img { display: block; }
+.hero.slim {
+  background:
+    radial-gradient(760px 380px at 16% -12%, rgba(255,194,26,.13), transparent 60%),
+    radial-gradient(620px 420px at 88% 20%, rgba(240,134,10,.05), transparent 60%),
+    var(--bg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .frame.tilt { transform: none; transition: none; }
+}
