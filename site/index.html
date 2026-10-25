@@ -11,10 +11,10 @@
 <meta property="og:title" content="BusTerminal — 面向个人媒体库的自动化控制台">
 <meta property="og:description" content="把散落一地的媒体工具，串成一条可验证的闭环。自托管、GPL-3.0、Docker 一键部署。">
 <meta property="og:url" content="https://seldoms.github.io/BusTerminal/">
-<meta property="og:image" content="https://seldoms.github.io/BusTerminal/images/home-blurred.jpg">
-<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:card" content="summary">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2308080a'/%3E%3Crect x='9' y='9' width='14' height='14' rx='3' fill='%23ffc21a'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="assets/style.css">
+<script>document.documentElement.className += ' js';</script>
 </head>
 <body data-title-key="meta.index.title">
 
@@ -33,7 +33,8 @@
 
 <main>
 
-  <section class="hero">
+  <!-- ============ 1 / Hero：产品即英雄 ============ -->
+  <section class="hero hero-xl">
     <div class="container">
       <p class="kicker" data-i18n="home.kicker">自托管 · 开源 · Docker</p>
       <h1 data-i18n-html="home.title">散落一地的媒体工具，<br>串成一条能验证的闭环</h1>
@@ -46,101 +47,168 @@
       </ul>
       <div class="cta-row">
         <a class="btn btn-primary" href="#start" data-i18n="home.cta.start">一行命令跑起来</a>
-        <a class="btn btn-ghost" href="features.html" data-i18n="home.cta.features">看完整特性</a>
+        <a class="btn btn-ghost" href="#pipeline" data-i18n="home.cta.pipeline">看它怎么运转 ↓</a>
       </div>
-      <div class="code">
-        <button class="copy" type="button" data-i18n="common.copy">复制</button>
-        <pre><code>docker run -d --name bus_terminal -p 8012:8000 \
-  -v "$PWD/busterminal-data:/app/data" \
-  ghcr.io/seldoms/busterminal:latest</code></pre>
+
+      <!-- 纯 CSS 构建的产品界面示意：不是截图，是演示数据 -->
+      <div class="hero-stage reveal">
+        <div class="mock tilt" role="img" aria-label="BusTerminal product interface illustration">
+          <div class="mock-bar"><i class="on"></i><i></i><i></i><span>bus_terminal — localhost:8012</span></div>
+          <div class="mock-body">
+            <aside class="mock-side">
+              <span class="mock-logo"></span>
+              <span class="mock-nav is-on" data-i18n="home.mock.nav.1">发现</span>
+              <span class="mock-nav" data-i18n="home.mock.nav.2">订阅</span>
+              <span class="mock-nav" data-i18n="home.mock.nav.3">下载</span>
+              <span class="mock-nav" data-i18n="home.mock.nav.4">媒体库</span>
+              <span class="mock-nav" data-i18n="home.mock.nav.5">清理</span>
+              <span class="mock-nav" data-i18n="home.mock.nav.6">看板</span>
+            </aside>
+            <div class="mock-main">
+              <div class="mock-stats">
+                <div class="mock-stat"><b>128,406</b><span data-i18n="home.mock.stat.1">库内条目</span></div>
+                <div class="mock-stat"><b>36</b><span data-i18n="home.mock.stat.2">进行中任务</span></div>
+                <div class="mock-stat"><b class="y">99.2%</b><span data-i18n="home.mock.stat.3">入库成功率</span></div>
+              </div>
+              <div class="mock-posters" aria-hidden="true">
+                <span class="poster p1"></span><span class="poster p2"></span><span class="poster p3"></span>
+                <span class="poster p4"></span><span class="poster p5"></span><span class="poster p6"></span>
+              </div>
+              <div class="mock-queue">
+                <div class="mock-row"><span class="mock-dot ok"></span><span class="mock-line w60"></span><span class="mock-tag" data-i18n="home.mock.row.1">已入库</span></div>
+                <div class="mock-row"><span class="mock-dot run"></span><span class="mock-line w45"></span><span class="mock-bar2"><i style="width:72%"></i></span><span class="mock-tag dim">72%</span></div>
+                <div class="mock-row"><span class="mock-dot ok"></span><span class="mock-line w52"></span><span class="mock-tag" data-i18n="home.mock.row.2">状态已回写</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="mock-caption" data-i18n="home.mock.caption">界面示意（演示数据）—— 发现、订阅、库状态与任务集中一屏</p>
+      </div>
+
+      <a class="scroll-cue" href="#pain" aria-hidden="true"><span></span></a>
+    </div>
+  </section>
+
+  <!-- ============ 2 / 痛点：工具散落 ============ -->
+  <section id="pain" class="pain">
+    <div class="container pain-grid">
+      <div class="pain-copy">
+        <p class="eyebrow" data-i18n="home.pain.eyebrow">01 / 现状</p>
+        <h2 data-i18n-html="home.pain.title">你的媒体库，是被五个工具<br>和一堆脚本粘起来的</h2>
+        <p data-i18n="home.pain.body">找片在一个地方，下载在另一个地方，改名靠手，入库靠猜。哪一步断了，没有人告诉你 —— 直到你想看的时候，才发现它根本不在库里。</p>
+        <p class="pain-punch" data-i18n="home.pain.punch">往下滚，看它们被收成一条线。</p>
+      </div>
+      <div class="pain-stage" id="pain-stage" aria-hidden="true">
+        <span class="chip c1" data-i18n="home.pain.chip.1">找片 · 站点 A</span>
+        <span class="chip c2" data-i18n="home.pain.chip.2">下载 · qBittorrent</span>
+        <span class="chip c3" data-i18n="home.pain.chip.3">改名 · 手工 + 脚本</span>
+        <span class="chip c4" data-i18n="home.pain.chip.4">刮削 · 工具 B</span>
+        <span class="chip c5" data-i18n="home.pain.chip.5">播放 · Jellyfin</span>
+        <span class="chip c6" data-i18n="home.pain.chip.6">状态 · 没人记</span>
+        <span class="chip core" data-i18n="home.pain.core">BusTerminal 来记账</span>
       </div>
     </div>
   </section>
 
-  <section class="showcase" id="shots">
-    <div class="container">
-      <div class="section-head center">
-        <p class="eyebrow" data-i18n="home.shots.eyebrow">01 / 界面</p>
-        <h2 data-i18n="home.shots.title">从首次引导，到日常主界面</h2>
-      </div>
-      <figure class="frame">
-        <div class="bar"><i class="on"></i><i></i><i></i><span>bus_terminal</span></div>
-        <img src="images/home-blurred.jpg" alt="BusTerminal 主界面" loading="eager">
-        <figcaption data-i18n="home.shots.1">主界面：发现、订阅、库状态与任务集中一屏（示例数据已模糊处理）</figcaption>
-      </figure>
-      <div class="grid cols-3 shots">
-        <figure class="shot">
-          <img src="images/onboarding-overview.png" alt="首次部署引导向导" loading="lazy">
-          <figcaption data-i18n="home.shots.2">首次引导：按步骤配好接口、下载与缓存策略</figcaption>
-        </figure>
-        <figure class="shot">
-          <img src="images/onboarding-services.png" alt="接口与授权配置" loading="lazy">
-          <figcaption data-i18n="home.shots.3">接口与授权：接你自己的下载器与媒体服务器</figcaption>
-        </figure>
-        <figure class="shot">
-          <img src="images/onboarding-blocklist.png" alt="屏蔽关键词设置" loading="lazy">
-          <figcaption data-i18n="home.shots.4">屏蔽关键词：把不想要的内容挡在链路之外</figcaption>
-        </figure>
-      </div>
-    </div>
-  </section>
-
-  <section id="pipeline">
+  <!-- ============ 3 / 链路：逐段点亮 ============ -->
+  <section id="pipeline" class="pipeline">
     <div class="container">
       <div class="section-head center">
         <p class="eyebrow" data-i18n="home.pipe.eyebrow">02 / 链路</p>
-        <h2 data-i18n="home.pipe.title">一条链路，八段状态</h2>
+        <h2 class="big" data-i18n="home.pipe.title">一条链路，八段状态</h2>
         <p data-i18n="home.pipe.body">每一段都记录谁发起、进行到哪、成功还是失败。哪一环断了，一眼看得出来。</p>
       </div>
-      <ul class="flow">
-        <li data-i18n="home.flow.1">内容发现</li>
-        <li class="sep">→</li>
-        <li data-i18n="home.flow.2">元数据缓存</li>
-        <li class="sep">→</li>
-        <li data-i18n="home.flow.3">磁链选择</li>
-        <li class="sep">→</li>
-        <li data-i18n="home.flow.4">下载执行</li>
-        <li class="sep">→</li>
-        <li data-i18n="home.flow.5">文件投放</li>
-        <li class="sep">→</li>
-        <li data-i18n="home.flow.6">媒体库入库</li>
-        <li class="sep">→</li>
-        <li data-i18n="home.flow.7">状态回写</li>
-        <li class="sep">→</li>
-        <li data-i18n="home.flow.8">订阅 / 清理</li>
-      </ul>
-      <div class="note centered" data-i18n-html="home.pipe.note">
+      <ol class="pipe-track" id="pipe-track">
+        <li class="pipe-step"><span class="pipe-node"></span><span class="pipe-name" data-i18n="home.flow.1">内容发现</span><span class="pipe-state"><em class="st-wait" data-i18n="home.pipe.wait">等待</em><em class="st-done" data-i18n="home.pipe.done">完成</em></span></li>
+        <li class="pipe-step"><span class="pipe-node"></span><span class="pipe-name" data-i18n="home.flow.2">元数据缓存</span><span class="pipe-state"><em class="st-wait" data-i18n="home.pipe.wait">等待</em><em class="st-done" data-i18n="home.pipe.done">完成</em></span></li>
+        <li class="pipe-step"><span class="pipe-node"></span><span class="pipe-name" data-i18n="home.flow.3">磁链选择</span><span class="pipe-state"><em class="st-wait" data-i18n="home.pipe.wait">等待</em><em class="st-done" data-i18n="home.pipe.done">完成</em></span></li>
+        <li class="pipe-step"><span class="pipe-node"></span><span class="pipe-name" data-i18n="home.flow.4">下载执行</span><span class="pipe-state"><em class="st-wait" data-i18n="home.pipe.wait">等待</em><em class="st-done" data-i18n="home.pipe.done">完成</em></span></li>
+        <li class="pipe-step"><span class="pipe-node"></span><span class="pipe-name" data-i18n="home.flow.5">文件投放</span><span class="pipe-state"><em class="st-wait" data-i18n="home.pipe.wait">等待</em><em class="st-done" data-i18n="home.pipe.done">完成</em></span></li>
+        <li class="pipe-step"><span class="pipe-node"></span><span class="pipe-name" data-i18n="home.flow.6">媒体库入库</span><span class="pipe-state"><em class="st-wait" data-i18n="home.pipe.wait">等待</em><em class="st-done" data-i18n="home.pipe.done">完成</em></span></li>
+        <li class="pipe-step"><span class="pipe-node"></span><span class="pipe-name" data-i18n="home.flow.7">状态回写</span><span class="pipe-state"><em class="st-wait" data-i18n="home.pipe.wait">等待</em><em class="st-done" data-i18n="home.pipe.done">完成</em></span></li>
+        <li class="pipe-step"><span class="pipe-node"></span><span class="pipe-name" data-i18n="home.flow.8">订阅 / 清理</span><span class="pipe-state"><em class="st-wait" data-i18n="home.pipe.wait">等待</em><em class="st-done" data-i18n="home.pipe.done">完成</em></span></li>
+      </ol>
+      <div class="loop-wrap reveal">
+        <svg class="loop-ring" viewBox="0 0 120 120" aria-hidden="true">
+          <circle class="ring-bg" cx="60" cy="60" r="52"></circle>
+          <circle class="ring-fg" cx="60" cy="60" r="52"></circle>
+        </svg>
+        <div class="loop-center"><strong data-i18n="home.pipe.loop.t">闭环</strong><span data-i18n="home.pipe.loop.d">每一段都有回执</span></div>
+      </div>
+      <div class="note centered reveal" data-i18n-html="home.pipe.note">
         <strong>它不碰你的文件。</strong>只记录状态、下发指令、校验结果 —— 下载和整理仍交给你已经信任的工具。
       </div>
     </div>
   </section>
 
+  <!-- ============ 4 / 能力：大屏叙事 ============ -->
   <section id="capabilities">
     <div class="container">
       <div class="section-head center">
         <p class="eyebrow" data-i18n="home.cap.eyebrow">03 / 能做什么</p>
-        <h2 data-i18n="home.cap.title">链路上的每一段，都由它记账</h2>
+        <h2 class="big" data-i18n="home.cap.title">链路上的每一段，都由它记账</h2>
       </div>
-      <div class="grid cols-3">
-        <article class="card icon">
+
+      <div class="feature-row reveal">
+        <div class="feature-copy">
           <h3 data-i18n="home.cap.1.t">多源发现与元数据</h3>
           <p data-i18n="home.cap.1.d">多来源统一检索、按番号聚合；详情与封面落库缓存，翻库不再逐条回源。</p>
-        </article>
+        </div>
+        <div class="zoom" aria-hidden="true">
+          <div class="zoom-head"><span class="mock-line w45"></span><span class="mock-tag" data-i18n="home.zoom.1.tag">本地缓存命中</span></div>
+          <div class="mock-row"><span class="poster p2 sm"></span><span class="mock-line w60"></span><span class="mock-tag dim">0.02s</span></div>
+          <div class="mock-row"><span class="poster p4 sm"></span><span class="mock-line w52"></span><span class="mock-tag dim">0.02s</span></div>
+          <div class="mock-row"><span class="poster p6 sm"></span><span class="mock-line w45"></span><span class="mock-tag dim">0.03s</span></div>
+          <p class="zoom-note" data-i18n="home.zoom.1.note">回源一次要几十秒 —— 所以它只回源一次。</p>
+        </div>
+      </div>
+
+      <div class="feature-row flip reveal">
+        <div class="feature-copy">
+          <h3 data-i18n="home.cap.3.t">磁链与下载调度</h3>
+          <p data-i18n="home.cap.3.d">指挥 qBittorrent 执行并归类；做种达标后自动投放，不必盯着进度条。</p>
+        </div>
+        <div class="zoom" aria-hidden="true">
+          <div class="zoom-head"><span class="mock-line w52"></span><span class="mock-tag" data-i18n="home.zoom.2.tag">做种达标 · 自动投放</span></div>
+          <div class="mock-row"><span class="mock-line w60"></span><span class="mock-bar2"><i style="width:100%"></i></span><span class="mock-tag">100%</span></div>
+          <div class="mock-row"><span class="mock-line w45"></span><span class="mock-bar2"><i style="width:72%"></i></span><span class="mock-tag dim">72%</span></div>
+          <div class="mock-row"><span class="mock-line w52"></span><span class="mock-bar2"><i style="width:31%"></i></span><span class="mock-tag dim">31%</span></div>
+          <p class="zoom-note" data-i18n="home.zoom.2.note">进度不用你盯，达标它自己往下走。</p>
+        </div>
+      </div>
+
+      <div class="feature-row reveal">
+        <div class="feature-copy">
+          <h3 data-i18n="home.cap.4.t">入库闭环</h3>
+          <p data-i18n="home.cap.4.d">投递 → 整理 → 刷库，每一步都回写状态，卡在哪一环直接可见。</p>
+        </div>
+        <div class="zoom" aria-hidden="true">
+          <div class="zoom-check"><span class="ck ok">✓</span><span class="mock-line w60"></span><span class="mock-tag" data-i18n="home.zoom.3.s1">投放完成</span></div>
+          <div class="zoom-check"><span class="ck ok">✓</span><span class="mock-line w52"></span><span class="mock-tag" data-i18n="home.zoom.3.s2">整理完成</span></div>
+          <div class="zoom-check"><span class="ck ok">✓</span><span class="mock-line w45"></span><span class="mock-tag" data-i18n="home.zoom.3.s3">媒体库已刷新</span></div>
+          <div class="zoom-check"><span class="ck run"></span><span class="mock-line w52"></span><span class="mock-tag dim" data-i18n="home.zoom.3.s4">状态回写中…</span></div>
+          <p class="zoom-note" data-i18n="home.zoom.3.note">顺序不能乱 —— 所以它是一条闭环，不是一堆脚本。</p>
+        </div>
+      </div>
+
+      <div class="feature-row flip reveal">
+        <div class="feature-copy">
+          <h3 data-i18n="home.cap.5.t">库状态与清理</h3>
+          <p data-i18n="home.cap.5.d">本地文件清单、删除保护、滞留检测，堵住“下完没入库”的黑洞。</p>
+        </div>
+        <div class="zoom" aria-hidden="true">
+          <div class="zoom-head"><span class="mock-line w45"></span><span class="mock-tag warn" data-i18n="home.zoom.4.tag">发现 3 条滞留</span></div>
+          <div class="mock-row"><span class="mock-dot warn"></span><span class="mock-line w60"></span><span class="mock-tag dim" data-i18n="home.zoom.4.r1">已下载 · 未入库 14 天</span></div>
+          <div class="mock-row"><span class="mock-dot ok"></span><span class="mock-line w52"></span><span class="mock-tag" data-i18n="home.zoom.4.r2">记录与文件一致</span></div>
+          <div class="mock-row"><span class="mock-dot ok"></span><span class="mock-line w45"></span><span class="mock-tag" data-i18n="home.zoom.4.r3">删除保护生效中</span></div>
+          <p class="zoom-note" data-i18n="home.zoom.4.note">静默失败会被主动挑出来，而不是等你发现。</p>
+        </div>
+      </div>
+
+      <div class="grid cols-2 reveal">
         <article class="card icon">
           <h3 data-i18n="home.cap.2.t">标题中文化</h3>
           <p data-i18n="home.cap.2.d">本地大模型批量翻译，带质量闸：不合格的译文不落库，宁可没有中文。</p>
-        </article>
-        <article class="card icon">
-          <h3 data-i18n="home.cap.3.t">磁链与下载调度</h3>
-          <p data-i18n="home.cap.3.d">指挥 qBittorrent 执行并归类；做种达标后自动投放，不必盯着进度条。</p>
-        </article>
-        <article class="card icon">
-          <h3 data-i18n="home.cap.4.t">入库闭环</h3>
-          <p data-i18n="home.cap.4.d">投递 → 整理 → 刷库，每一步都回写状态，卡在哪一环直接可见。</p>
-        </article>
-        <article class="card icon">
-          <h3 data-i18n="home.cap.5.t">库状态与清理</h3>
-          <p data-i18n="home.cap.5.d">本地文件清单、删除保护、滞留检测，堵住“下完没入库”的黑洞。</p>
         </article>
         <article class="card icon">
           <h3 data-i18n="home.cap.6.t">部署与凭据安全</h3>
@@ -153,16 +221,60 @@
     </div>
   </section>
 
+  <!-- ============ 5 / 信任：它不碰你的文件 ============ -->
+  <section id="relation" class="trust">
+    <div class="container">
+      <div class="section-head center">
+        <p class="eyebrow" data-i18n="home.rel.eyebrow">05 / 边界</p>
+        <h2 class="big" data-i18n="home.rel.title">不替代你已经在用的工具</h2>
+        <p data-i18n="home.rel.body">每个环节交给最合适的组件，它只负责决策、下发与记账。</p>
+      </div>
+      <div class="trust-diagram reveal" aria-hidden="true">
+        <div class="trust-col">
+          <span class="trust-node">qBittorrent<em data-i18n="home.rel.r1a">下载执行</em></span>
+          <span class="trust-node"><span data-i18n="home.trust.scraper">刮削工具</span><em data-i18n="home.rel.r2a">命名、整理、生成 NFO</em></span>
+          <span class="trust-node">Jellyfin<em data-i18n="home.rel.r3a">媒体库扫描与播放</em></span>
+        </div>
+        <svg class="trust-lines" viewBox="0 0 200 240" preserveAspectRatio="none" aria-hidden="true">
+          <path d="M0,40 C70,40 130,120 200,120"></path>
+          <path d="M0,120 L200,120"></path>
+          <path d="M0,200 C70,200 130,120 200,120"></path>
+        </svg>
+        <div class="trust-center">
+          <span class="trust-core">BusTerminal<em data-i18n="home.rel.r4a">发现、决策、状态与重试</em></span>
+          <span class="trust-shield" data-i18n="home.trust.shield">不碰你的文件 · 只记状态、下发指令、校验结果</span>
+        </div>
+      </div>
+      <div class="note centered reveal" data-i18n="home.rel.note">
+        组件之间不用你写脚本粘合 —— 链路、状态回写、失败重试都由它驱动，接入地址填一次即可。
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 6 / 安装：终端 + 标签页 ============ -->
   <section id="start">
     <div class="container">
       <div class="section-head center">
         <p class="eyebrow" data-i18n="home.start.eyebrow">04 / 怎么跑</p>
-        <h2 data-i18n="home.start.title">三种起手式，挑一个</h2>
+        <h2 class="big" data-i18n="home.start.title">三种起手式，挑一个</h2>
         <p data-i18n="home.start.body">官方镜像已发布在 GHCR，不用 clone 源码，也不用自己构建。</p>
       </div>
-      <div class="grid cols-3">
-        <article class="card">
-          <h3 data-i18n="home.start.a.t">一行命令 · 最快</h3>
+
+      <div class="term reveal">
+        <div class="mock-bar"><i class="on"></i><i></i><i></i><span>terminal</span></div>
+        <div class="code term-code">
+          <button class="copy" type="button" data-i18n="common.copy">复制</button>
+          <pre><code id="typewriter" data-text="docker run -d --name bus_terminal -p 8012:8000 -v &quot;$PWD/busterminal-data:/app/data&quot; ghcr.io/seldoms/busterminal:latest"></code><span class="caret" aria-hidden="true"></span></pre>
+        </div>
+      </div>
+
+      <div class="tabs reveal" id="install-tabs">
+        <div class="tab-list" role="tablist">
+          <button class="tab is-on" type="button" role="tab" aria-selected="true" data-tab="a" data-i18n="home.start.a.t">一行命令 · 最快</button>
+          <button class="tab" type="button" role="tab" aria-selected="false" data-tab="b" data-i18n="home.start.b.t">Compose · 官方推荐</button>
+          <button class="tab" type="button" role="tab" aria-selected="false" data-tab="c" data-i18n="home.start.c.t">全栈 · 一次装齐</button>
+        </div>
+        <div class="tab-panel is-on" data-panel="a">
           <p data-i18n="home.start.a.d">默认 SQLite，不需要额外容器。开 8012 端口就进引导向导。</p>
           <div class="code">
             <button class="copy" type="button" data-i18n="common.copy">复制</button>
@@ -172,9 +284,8 @@
   -v "$PWD/busterminal-data:/app/data" \
   ghcr.io/seldoms/busterminal:latest</code></pre>
           </div>
-        </article>
-        <article class="card">
-          <h3 data-i18n="home.start.b.t">Compose · 官方推荐</h3>
+        </div>
+        <div class="tab-panel" data-panel="b" hidden>
           <p data-i18n="home.start.b.d">路径与端口全部可配，可选带上 PostgreSQL。适合长期运行。</p>
           <div class="code">
             <button class="copy" type="button" data-i18n="common.copy">复制</button>
@@ -184,9 +295,8 @@ cp .env.install.example .env
 vi .env   <span class="cmt"># port &amp; db password</span>
 docker compose -f docker-compose.install.yml up -d</code></pre>
           </div>
-        </article>
-        <article class="card">
-          <h3 data-i18n="home.start.c.t">全栈 · 一次装齐</h3>
+        </div>
+        <div class="tab-panel" data-panel="c" hidden>
           <p data-i18n="home.start.c.d">连数据库、下载器、刮削工具、媒体服务器一起装。每个服务挂一个 profile，装哪些由你决定。</p>
           <div class="code">
             <button class="copy" type="button" data-i18n="common.copy">复制</button>
@@ -194,9 +304,10 @@ docker compose -f docker-compose.install.yml up -d</code></pre>
 COMPOSE_PROFILES=db,qb,amane,jellyfin \
   docker compose -f docker-compose.fullstack.yml up -d</code></pre>
           </div>
-        </article>
+        </div>
       </div>
-      <div class="note centered" style="margin-top:20px" data-i18n-html="home.start.note">
+
+      <div class="note centered reveal" style="margin-top:20px" data-i18n-html="home.start.note">
         <strong>不想自己排端口和路径？</strong>
         把 <code>docs/AGENT_FULLSTACK_INSTALL.md</code> 整段交给你的 AI agent：它先探查本机，
         把服务清单摊给你逐项选，<strong>你确认之后才动手安装</strong>。已经装好的服务只复用、不重装。
@@ -204,47 +315,7 @@ COMPOSE_PROFILES=db,qb,amane,jellyfin \
     </div>
   </section>
 
-  <section id="relation">
-    <div class="container">
-      <div class="section-head center">
-        <p class="eyebrow" data-i18n="home.rel.eyebrow">05 / 边界</p>
-        <h2 data-i18n="home.rel.title">不替代你已经在用的工具</h2>
-        <p data-i18n="home.rel.body">每个环节交给最合适的组件，它只负责决策、下发与记账。</p>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th data-i18n="home.rel.th1">环节</th>
-              <th data-i18n="home.rel.th2">由谁负责</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td data-i18n="home.rel.r1a">下载执行</td>
-              <td data-i18n="home.rel.r1b">你已有的下载器（qBittorrent 等）</td>
-            </tr>
-            <tr>
-              <td data-i18n="home.rel.r2a">命名、整理、生成 NFO</td>
-              <td data-i18n="home.rel.r2b">你已有的刮削工具</td>
-            </tr>
-            <tr>
-              <td data-i18n="home.rel.r3a">媒体库扫描与播放</td>
-              <td data-i18n="home.rel.r3b">你已有的媒体服务器（Jellyfin 等）</td>
-            </tr>
-            <tr>
-              <td data-i18n="home.rel.r4a">发现、决策、状态与重试</td>
-              <td><strong data-i18n="home.rel.r4c">BusTerminal</strong></td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <div class="note centered" style="margin-top:20px" data-i18n="home.rel.note">
-        组件之间不用你写脚本粘合 —— 链路、状态回写、失败重试都由它驱动，接入地址填一次即可。
-      </div>
-    </div>
-  </section>
-
+  <!-- ============ 7 / 文档 ============ -->
   <section id="docs">
     <div class="container">
       <div class="section-head center">
