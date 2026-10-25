@@ -2217,8 +2217,14 @@ class JavBusScraper:
             # 尝试根据图片 URL 构造 Referer，或者是 BaseURL
             headers['Referer'] = self.base_url + '/'
             
-            # [FIX] 禁用 SSL 验证，防止某些图床证书问题
-            response = self.session.get(url, stream=True, timeout=20, headers=headers, verify=False)
+            # 默认校验 SSL；仅当显式开启 SCRAPER_ALLOW_INSECURE_IMAGE_FETCH 时，
+            # 才在证书错误时降级为不校验（与 organizer.py 的图床策略一致）。
+            try:
+                response = self.session.get(url, stream=True, timeout=20, headers=headers, verify=True)
+            except requests.exceptions.SSLError:
+                if not getattr(config, "SCRAPER_ALLOW_INSECURE_IMAGE_FETCH", False):
+                    raise
+                response = self.session.get(url, stream=True, timeout=20, headers=headers, verify=False)
             response.raise_for_status()
             return response
         except Exception as e:

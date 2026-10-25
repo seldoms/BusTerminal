@@ -51,9 +51,10 @@ def _install_fake_syncer(monkey_target, report_or_exc):
         def __init__(self, db):
             self.db = db
 
-        def sync(self, dry_run=False, limit=None):
+        def sync(self, dry_run=False, limit=None, randomize=False):
             calls["sync"] += 1
             calls["limit"] = limit
+            calls["randomize"] = randomize
             if isinstance(report_or_exc, Exception):
                 raise report_or_exc
             return report_or_exc
@@ -75,8 +76,13 @@ def test_loop_runs_once_and_marks_success():
     finally:
         gfriends_sync.GfriendsAvatarSyncer = original
     assert calls["sync"] == 1
-    # 每轮限量必须来自配置，不能一次性把 6 万条全捞出来
-    assert calls["limit"] == main_module.config.GFRIENDS_AVATAR_SYNC_BATCH
+    # 每轮扫描量必须来自配置，不能一次性把 6 万条全捞出来：
+    # 循环按「BATCH × SCAN_FACTOR（下限 BATCH、上限 50000）」放大扫描窗口，
+    # 因为索引命中率只有 2~15%，只扫 BATCH 条会长期零产出（见 main 循环注释）。
+    batch = main_module.config.GFRIENDS_AVATAR_SYNC_BATCH
+    factor = main_module.config.GFRIENDS_AVATAR_SYNC_SCAN_FACTOR
+    assert calls["limit"] == min(max(batch * factor, batch), 50000)
+    assert calls["randomize"] is True
 
 
 def test_loop_survives_syncer_exception():
