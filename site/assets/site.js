@@ -106,7 +106,9 @@
       btn.addEventListener('click', function () {
         var pre = btn.parentNode.querySelector('pre');
         if (!pre) { return; }
-        copyText(pre.innerText.replace(/\s+$/, ''), btn);
+        var tw = pre.querySelector('#typewriter');
+        var text = tw ? (tw.getAttribute('data-text') || '') : pre.innerText.replace(/\s+$/, '');
+        copyText(text, btn);
       });
     });
   }
@@ -119,7 +121,95 @@
     });
   }
 
+  /* ---------------- 改版新增：滚动叙事 / 链路点亮 / 标签页 / 打字机 ----------------
+     全部为渐进增强：无 IntersectionObserver 或减少动效时直接呈现最终状态。
+     这些元素只出现在首页，子页面没有对应节点时各 init 自动跳过。 */
+
+  var reduceMotion = false;
+  try {
+    reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  } catch (e) { /* 忽略 */ }
+
+  function observe(el, threshold, cb) {
+    if (!el) { return; }
+    if (reduceMotion || !('IntersectionObserver' in window)) { cb(el); return; }
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (en.isIntersecting) { cb(el); io.disconnect(); }
+      });
+    }, { threshold: threshold });
+    io.observe(el);
+  }
+
+  function initReveal() {
+    document.querySelectorAll('.reveal, .loop-wrap, .trust-diagram, .hero-stage').forEach(function (el) {
+      observe(el, 0.22, function (t) { t.classList.add('inview'); });
+    });
+  }
+
+  function initPain() {
+    var stage = document.getElementById('pain-stage');
+    if (!stage) { return; }
+    observe(stage, 0.35, function (t) { t.classList.add('gather'); });
+  }
+
+  function initPipe() {
+    var track = document.getElementById('pipe-track');
+    if (!track) { return; }
+    var steps = track.querySelectorAll('.pipe-step');
+    observe(track, 0.15, function () {
+      steps.forEach(function (step, i) {
+        var light = function () {
+          step.classList.add('lit');
+          track.style.setProperty('--pipe-p', ((i + 1) / steps.length * 100) + '%');
+        };
+        if (reduceMotion) { light(); }
+        else { window.setTimeout(light, 260 * i); }
+      });
+    });
+  }
+
+  function initTabs() {
+    var wrap = document.getElementById('install-tabs');
+    if (!wrap) { return; }
+    var tabs = wrap.querySelectorAll('.tab');
+    var panels = wrap.querySelectorAll('.tab-panel');
+    tabs.forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        tabs.forEach(function (t) {
+          t.classList.toggle('is-on', t === tab);
+          t.setAttribute('aria-selected', t === tab ? 'true' : 'false');
+        });
+        panels.forEach(function (p) {
+          var on = p.getAttribute('data-panel') === tab.getAttribute('data-tab');
+          p.classList.toggle('is-on', on);
+          if (on) { p.removeAttribute('hidden'); } else { p.setAttribute('hidden', ''); }
+        });
+      });
+    });
+  }
+
+  function initTypewriter() {
+    var el = document.getElementById('typewriter');
+    if (!el) { return; }
+    var full = el.getAttribute('data-text') || '';
+    if (reduceMotion || !('IntersectionObserver' in window)) { el.textContent = full; return; }
+    observe(el, 0.4, function () {
+      var i = 0;
+      var timer = window.setInterval(function () {
+        i += 2;
+        el.textContent = full.slice(0, i);
+        if (i >= full.length) { window.clearInterval(timer); }
+      }, 24);
+    });
+  }
+
   initLangToggle();
   initCopyButtons();
+  initReveal();
+  initPain();
+  initPipe();
+  initTabs();
+  initTypewriter();
   applyLang(readLang());
 })();
