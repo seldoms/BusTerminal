@@ -90,11 +90,29 @@ class _FakeAmaneService:
         return self.libraries
 
 
-def _build(db, client, libraries=None):
+class _FakeJellyfinClient:
+    """只关心有没有被要求重扫库（刷不刷得动由 Jellyfin 自己负责）。"""
+
+    def __init__(self, error=None):
+        self.refresh_calls = 0
+        self.reloads = 0
+        self.error = error
+
+    def reload_config(self):
+        self.reloads += 1
+
+    def refresh_library(self):
+        self.refresh_calls += 1
+        if self.error:
+            raise self.error
+
+
+def _build(db, client, libraries=None, jellyfin=None):
     return AmaneHealService(
         db=db,
         amane_service=_FakeAmaneService(client, libraries),
         amane_client=client,
+        jellyfin_client=jellyfin,
         logger=None,
         safe_exception_label=lambda exc: type(exc).__name__,
         display_value_for_log=lambda value: str(value),
@@ -262,3 +280,67 @@ def test_heal_batch_executes_when_not_dry_run():
     assert report["healed"] == 1
     assert report["failed"] == 0
     assert report["results"][0]["media_file_id"] == 95
+
+
+# ---------- Jellyfin 刷新（2026-10-17 实测缺这一步：文件已整理但 Jellyfin 仍指向 _incoming） ----------
+
+def test_heal_one_refreshes_jellyfin_after_organize():
+    db = _FakeDb()
+    client = _FakeClient(media=[_pending_media(number="483DAM-062")])
+    jellyfin = _FakeJellyfinClient()
+    outcome = _build(db, client, jellyfin=jellyfin).heal_one("483DAM-062", library_id=1)
+
+    assert outcome["healed"] is True
+    assert jellyfin.refresh_calls == 1
+
+
+def test_heal_batch_refreshes_jellyfin_only_once_for_whole_batch():
+    now = time.time()
+    db = _FakeDb([
+        {"movie_id": "483DAM-062", "title": "a", "organize_status": "pending",
+         "jellyfin_status": "unknown", "updated_at": now - 10000},
+        {"movie_id": "483DAM-063", "title": "b", "organize_status": "pending",
+         "jellyfin_status": "unknown", "updated_at": now - 9000},
+    ])
+    media = [
+        _pending_media(number="483DAM-062"),
+        {"id": 96, "number": "483DAM-063", "status": "pending",
+         "path": "/hp/all/483DAM-063/483DAM-063.mp4"},
+    ]
+    jellyfin = _FakeJellyfinClient()
+    report = _build(db, _FakeClient(media=media), jellyfin=jellyfin).heal_batch(
+        limit=10, older_than_seconds=7200, dry_run=False)
+
+    assert report["healed"] == 2
+    assert jellyfin.refresh_calls == 1
+    assert report["jellyfin_refresh"] is True
+
+
+def test_heal_batch_does_not_refresh_when_nothing_healed():
+    now = time.time()
+    db = _FakeDb([
+        {"movie_id": "X-1", "title": "x", "organize_status": "pending",
+         "jellyfin_status": "unknown", "updated_at": now - 10000},
+    ])
+    jellyfin = _FakeJellyfinClient()
+    report = _build(db, _FakeClient(media=[]), jellyfin=jellyfin).heal_batch(
+        limit=10, older_than_seconds=7200, dry_run=False)
+
+    assert report["healed"] == 0
+    assert jellyfin.refresh_calls == 0
+    assert "jellyfin_refresh" not in report
+
+
+def test_jellyfin_refresh_error_does_not_fail_heal():
+    now = time.time()
+    db = _FakeDb([
+        {"movie_id": "483DAM-062", "title": "t", "organize_status": "pending",
+         "jellyfin_status": "unknown", "updated_at": now - 10000},
+    ])
+    client = _FakeClient(media=[_pending_media(number="483DAM-062")])
+    jellyfin = _FakeJellyfinClient(error=RuntimeError("jellyfin_down"))
+    report = _build(db, client, jellyfin=jellyfin).heal_batch(
+        limit=10, older_than_seconds=7200, dry_run=False)
+
+    assert report["healed"] == 1
+    assert report["jellyfin_refresh"] is False

@@ -12,7 +12,7 @@ The service currently has no built-in authentication. Keep it on a trusted LAN o
 - `local-write`: changes BusTerminal's local database/cache/configuration; verify in an isolated test database.
 - `external-write`: may control qBittorrent/Jellyfin or enqueue real downloads; automated tests must mock the external service.
 
-Operations: 126 total; 69 read-only; 44 local-write; 13 external-write.
+Operations: 129 total; 70 read-only; 46 local-write; 13 external-write.
 
 ## Endpoints
 
@@ -59,6 +59,8 @@ Operations: 126 total; 69 read-only; 44 local-write; 13 external-write.
 | `GET` | `/api/bi/overview` | `read-only` | - | query:refresh | - | Get Bi Overview |
 | `GET` | `/api/bi/settings` | `read-only` | - | - | - | Get Bi Settings |
 | `POST` | `/api/bi/settings` | `local-write` | - | - | required | Update Bi Settings |
+| `GET` | `/api/block-keywords` | `read-only` | - | - | - | Get Block Keywords |
+| `POST` | `/api/block-keywords` | `local-write` | - | - | optional | Update Block Keywords |
 | `POST` | `/api/cache/cleanup` | `local-write` | - | - | - | Cleanup Cache To Safe Watermark |
 | `GET` | `/api/cache/images/stats` | `read-only` | - | - | - | Get Image Cache Stats |
 | `POST` | `/api/cache/invalidate` | `local-write` | - | - | required | Invalidate Cache |
@@ -113,6 +115,7 @@ Operations: 126 total; 69 read-only; 44 local-write; 13 external-write.
 | `GET` | `/api/lifecycle/movies/{movie_id}/events` | `read-only` | - | path:movie_id*, query:limit | - | Get Lifecycle Events |
 | `GET` | `/api/logs` | `read-only` | - | - | - | Get Logs |
 | `GET` | `/api/magnets/select` | `read-only` | - | query:url*, query:preference, query:movie_id, query:title | - | Select Magnet |
+| `POST` | `/api/maintenance/junk-sweep` | `local-write` | - | query:dry_run, query:min_size_mb | - | Run Junk Sweep |
 | `GET` | `/api/movies` | `read-only` | - | query:url*, query:page, query:limit, query:force_refresh, query:translate_mode | - | Get Movies |
 | `GET` | `/api/navigation` | `read-only` | - | query:force_refresh | - | Get Navigation |
 | `POST` | `/api/onboarding/apply` | `local-write` | - | - | required | Apply Onboarding |

@@ -4,6 +4,7 @@ import logging
 import hashlib
 from pathlib import Path
 import qb_api
+import media_policy
 from database import db, display_value_for_log, parse_int_value
 import config
 import time
@@ -158,23 +159,28 @@ class LifecycleManager:
                 fpath = os.path.join(root, f)
                 fname = f.lower()
                 ext = os.path.splitext(fname)[1]
-                
-                # 保留所有媒体相关文件（视频、NFO、图片、字幕）
-                if ext in KEEP_EXTS:
+                try:
+                    file_size = os.path.getsize(fpath)
+                except OSError:
                     continue
-                
-                # 识别并删除广告文件
-                is_trash = False
-                if ext in AD_EXTS:
-                    is_trash = True
-                else:
-                    for kw in AD_KEYWORDS:
-                        if kw in fname:
-                            is_trash = True
-                            break
-                
+
+                # 400MB 以下的视频 = 种子自带的广告/片段，不再当「媒体文件」保留。
+                # 口径与下载选片一致（media_policy），否则这边放行、Jellyfin 就入库了。
+                is_trash = media_policy.is_undersized_video(fname, file_size)
+                if not is_trash:
+                    # 保留其余媒体相关文件（NFO、图片、字幕）
+                    if ext in KEEP_EXTS:
+                        continue
+                    if ext in AD_EXTS:
+                        is_trash = True
+                    else:
+                        for kw in AD_KEYWORDS:
+                            if kw in fname:
+                                is_trash = True
+                                break
+
                 # 小文件且不是已知扩展名的也大概率是垃圾
-                if os.path.getsize(fpath) < 1024 * 1024: # < 1MB
+                if file_size < 1024 * 1024: # < 1MB
                     is_trash = True
                 
                 if is_trash:

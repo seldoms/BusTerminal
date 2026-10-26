@@ -16,6 +16,8 @@ import time
 import warnings
 from pathlib import Path
 
+import media_policy
+
 # The smoke test may run on a developer's global Python where unrelated tools
 # install an incompatible chardet. Keep that host-level warning out of scenario
 # output; production runtime should still expose dependency problems normally.
@@ -3348,6 +3350,8 @@ def _expected_startup_task_names(main_module, extra=()):
         names.add("translation_backfill_loop")
     if main_module.config.FEED_PRELOAD_REFRESH_ENABLED:
         names.add("feed_preload_refresh_loop")
+    if main_module.config.JUNK_SWEEP_ENABLED:
+        names.add("junk_sweep_loop")
     names.update(extra)
     return names
 
@@ -8170,16 +8174,22 @@ def test_managed_file_delete_guard(main_module, temp_dir):
 
     trash_file = managed_root / "广告.txt"
     keep_file = managed_root / "movie.mp4"
+    small_video = managed_root / "ad_fragment.mp4"
     outside_trash = unmanaged_root / "广告.txt"
     trash_file.write_text("trash", encoding="utf-8")
-    keep_file.write_text("video", encoding="utf-8")
+    # 400MB 以下的视频按新策略算碎片（见 media_policy），所以「该保留的媒体文件」
+    # 必须是真·成品体积：用稀疏文件占位，不实际写 400MB 数据。
+    with keep_file.open("wb") as fh:
+        fh.truncate(media_policy.MIN_PLAYABLE_VIDEO_BYTES + 1024)
+    small_video.write_text("tiny", encoding="utf-8")
     outside_trash.write_text("trash", encoding="utf-8")
 
     main_module.lifecycle_manager.lifecycle_manager.clean_ads_post_download(str(unmanaged_root))
     assert outside_trash.exists()
     main_module.lifecycle_manager.lifecycle_manager.clean_ads_post_download(str(managed_root))
     assert not trash_file.exists()
-    assert keep_file.exists()
+    assert not small_video.exists()   # 400MB 以下视频 = 碎片，直接清
+    assert keep_file.exists()          # 成品体积的视频照旧保留
 
 
 def test_cors_wildcard_disables_credentials():

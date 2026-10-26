@@ -25,6 +25,11 @@ ONBOARDING_VERSION = 1
 # 屏蔽词在 config 表里的键
 BLOCK_KEYWORDS_KEY = "block_keywords"
 
+# 推荐屏蔽词：设置页「恢复推荐词」用，**不会隐式生效**（必须保存后才拦）。
+# `vr` 会命中标题/番号里的 VR 标记（`VR`、`vr-`、`ＶＲ`、`HD VR`），
+# 由 normalize_block_keyword 归一化后做子串匹配。
+DEFAULT_BLOCK_KEYWORDS = ("vr",)
+
 # 引导表单写这些键时要按「敏感」处理：空值代表保持原样，避免擦掉已有密钥。
 # 注意这套名单是「引导页自己的」——db.set_config 的加密通道以
 # database.SENSITIVE_CONFIG_KEYS 为准，两者不完全一致（比如 qb_password 走嵌套 qb_config）。
@@ -92,6 +97,12 @@ def match_block_keyword(
     """返回第一个命中的屏蔽词，没命中返回 None。
 
     匹配前对被检文本做同样的归一化，保证「填 vr 挡 ＶＲ-」这类写法成立。
+
+    ⚠️ 口径是**归一化后的裸子串匹配**，所以短词会连坐：
+    `vr` 既命中 `VR-123` / `BPDVR0005`（真 VR 番号），也会命中 `SVVRT-071`
+    （普通番号，实测确实被误挡）。这是有意保留的取舍 —— 真实 VR 番号大量是
+    `BPDVR0005` 这种嵌在字母串里的写法，加词边界会漏挡；误挡由设置页的
+    「试算影响范围」提前暴露，用户可改用更精确的词。
     """
     normalized_keywords = [kw for kw in keywords if kw]
     if not normalized_keywords:
@@ -138,8 +149,23 @@ class OnboardingService:
     # 屏蔽词闸门
     # ------------------------------------------------------------------
     def get_block_keywords(self) -> List[str]:
-        """读当前生效的屏蔽词。运行期每次下载判定都会调，所以不回填默认值。"""
+        """读当前生效的屏蔽词。
+
+        运行期每次展示与下载判定都会调，走 db 的进程内配置缓存，成本可忽略。
+        未配置返回空列表（= 不屏蔽）；默认词只作为设置页的推荐值，不会隐式生效，
+        避免用户「明明填了空却还在挡」这种看不见的行为。
+        """
         return parse_block_keywords(self.db.get_config(BLOCK_KEYWORDS_KEY))
+
+    def set_block_keywords(self, raw: Any) -> List[str]:
+        """保存屏蔽词（任意分隔写法），返回归一化后的结果。
+
+        归一化在写入前完成，运行期匹配因此只需一次子串判断。
+        注意空串也必须落库 —— 它是「用户主动清空」的唯一凭据。
+        """
+        keywords = parse_block_keywords(raw)
+        self.db.set_config(BLOCK_KEYWORDS_KEY, ",".join(keywords))
+        return keywords
 
     def is_blocked(self, *texts: Any) -> Dict[str, Any]:
         """下载侧闸门：命中屏蔽词就拒绝，并给出命中的词方便前端提示与排障。"""
@@ -182,15 +208,25 @@ class OnboardingService:
             kept.append(movie)
         return kept, blocked_count
 
-    def preview_blocked_movies(self, limit: int = 20) -> List[Dict[str, Any]]:
+    def preview_blocked_movies(
+        self,
+        limit: int = 20,
+        keywords: Optional[Iterable[str]] = None,
+    ) -> List[Dict[str, Any]]:
         """从本地 movies 表抽样，找出当前屏蔽词会挡掉的条目。
 
-        只读。给引导页做「保存前先看效果」用 —— 屏蔽词填太宽（比如误填一个常见
-        单词）会静默挡掉大量正常片子，必须让用户看得见。
+        只读。给引导页 / 设置页做「保存前先看效果」用 —— 屏蔽词填太宽（比如误填一个
+        常见单词）会静默挡掉大量正常片子，必须让用户看得见。
+
+        `keywords` 传 None 表示用生效中的配置；传列表则**只试算不改库**。
         """
-        keywords = self.get_block_keywords()
-        if not keywords:
+        if keywords is None:
+            active_keywords = self.get_block_keywords()
+        else:
+            active_keywords = [kw for kw in keywords if kw]
+        if not active_keywords:
             return []
+        keywords = active_keywords
 
         conn = self.db.get_connection()
         try:

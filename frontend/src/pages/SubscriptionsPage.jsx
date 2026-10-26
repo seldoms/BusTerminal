@@ -276,6 +276,29 @@ function SubscriptionCard({ sub, stats, expanded, translatedName, onDelete, onTo
     const [selectedCovers, setSelectedCovers] = React.useState([]);
     const [loadedCovers, setLoadedCovers] = React.useState(new Set());
 
+    // 扇形封面默认就要显示。但 234 张卡各拉 5 张图会拖垮首屏，
+    // 所以不做「全量预加载」，改成卡片进入视口才取 —— 首屏只加载可见的十来张，
+    // 滚动到哪加载到哪，视觉上仍是默认展开的扇形。
+    const cardRef = React.useRef(null);
+    const [inView, setInView] = React.useState(false);
+
+    React.useEffect(() => {
+        if (inView) return undefined;
+        const el = cardRef.current;
+        if (!el || typeof IntersectionObserver === 'undefined') {
+            setInView(true);
+            return undefined;
+        }
+        const observer = new IntersectionObserver((entries) => {
+            if (entries.some(entry => entry.isIntersecting)) {
+                setInView(true);
+                observer.disconnect();
+            }
+        }, { rootMargin: '300px 0px' });
+        observer.observe(el);
+        return () => observer.disconnect();
+    }, [inView]);
+
     React.useEffect(() => {
         const decorativeCovers = Array.isArray(stats?.decorative_covers) ? stats.decorative_covers : [];
         const allCovers = [
@@ -285,11 +308,10 @@ function SubscriptionCard({ sub, stats, expanded, translatedName, onDelete, onTo
             .filter(cover => cover && String(cover).trim())
             .filter((cover, index, list) => list.indexOf(cover) === index);
 
-        // ⚠️ 只有展开时才拉封面图。之前 234 张订阅卡各拉 5 张 = 上千张图并发请求，
-        // 把首屏拖到几秒；列表概览根本用不上这些图。
-        if (!expanded) {
+        // 只在「已进入视口」或「手动展开详情」时才取封面
+        if (!inView && !expanded) {
             setSelectedCovers([]);
-            return;
+            return undefined;
         }
 
         if (allCovers.length === 0) {
@@ -312,7 +334,7 @@ function SubscriptionCard({ sub, stats, expanded, translatedName, onDelete, onTo
         setSelectedCovers(allCovers.slice(0, Math.min(5, allCovers.length)));
         setLoadedCovers(new Set());
         return undefined;
-    }, [stats, taskList, expanded, sub.url]);
+    }, [stats, taskList, expanded, sub.url, inView]);
 
     const handleImageLoad = (url) => {
         setLoadedCovers(prev => new Set([...prev, url]));
@@ -336,7 +358,7 @@ function SubscriptionCard({ sub, stats, expanded, translatedName, onDelete, onTo
     const visibleName = nameChars.length > 8 ? `${nameChars.slice(0, 8).join('')}…` : displayName;
 
     return (
-        <div className="actress-card">
+        <div className="actress-card" ref={cardRef}>
             {selectedCovers.length > 0 && (
                 <div className="fan-gallery">
                     {selectedCovers.map((url, index) => (

@@ -16,6 +16,7 @@ export const API_ERROR_MESSAGES = {
     no_magnets_available_pending: '暂无可用磁力，任务已加入等待',
     no_suitable_magnet_pending: '暂无合适磁力，任务已加入等待',
     download_blocked: '下载被阻止，请检查权限设置',
+    blocked_keyword: '该影片命中屏蔽关键词，已按设置隐藏',
     download_queue_options_unsupported: '当前下载队列不支持该操作',
     // 女优 / 订阅
     actress_not_found: '未找到该女优',

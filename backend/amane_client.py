@@ -218,6 +218,15 @@ class AmaneClient:
         payload = self.request("PATCH", f"/api/media/{int(media_id)}", json_body=dict(fields))
         return payload if isinstance(payload, dict) else {}
 
+    def delete_media(self, media_id: int) -> bool:
+        """删掉 amane 里的一条 media 记录（204，无响应体）。
+
+        ⚠️ 只删数据库记录，**不删磁盘文件** —— 物理文件由栈内 junk_sweeper 容器清理。
+        两件事要都做到：只删记录会被下次扫描建回来，只删文件则会留下悬空条目。
+        """
+        self.request("DELETE", f"/api/media/{int(media_id)}")
+        return True
+
     # ---------- 任务 ----------
 
     def submit_task(self, payload: Dict[str, Any]) -> Dict[str, Any]:

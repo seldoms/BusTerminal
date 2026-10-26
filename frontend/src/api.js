@@ -435,6 +435,13 @@ export const movieApi = {
     // 读 sysConfig.jellyfin_host 之类全是 undefined —— 表现为「保存后刷新就没了」。
     getSystemConfig: () => api.get('/api/config/system').then(r => r?.data ?? {}),
     updateSystemConfig: (data) => api.post('/api/config/system', data),
+
+    // --- 全局关键词屏蔽（展示 + 下载双链路）---
+    getBlockKeywords: () => api.get('/api/block-keywords').then(r => r?.data ?? {}),
+    saveBlockKeywords: (data) => api.post('/api/block-keywords', data),
+    // 纯内存试算：返回会被挡掉的样本，不写库
+    previewBlockKeywords: (data) => api.post('/api/onboarding/block-keywords/preview', data),
+
     getCacheStats: () => api.get('/api/cache/stats').then(r => r?.data ?? {}),
     // 翻译进度总览（已翻/待翻/队列/速率/游标）
     getTranslationStatus: () => api.get('/api/translation/status'),

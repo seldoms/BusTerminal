@@ -8,6 +8,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 import config
+import media_policy
 from amane_client import (
     AmaneClient,
     AmaneError,
@@ -18,7 +19,10 @@ CONFIG_KEY_BASE_URL = "amane_base_url"
 CONFIG_KEY_TOKEN = "amane_token"
 
 # 小于这个体积基本是广告样片 / 假种子产物，amane 侧应当直接跳过。
-RECOMMENDED_MIN_FILE_SIZE = 100 * 1024 * 1024
+# 与下载选片、junk_sweeper、索引巡检共用同一阈值（JUNK_MIN_VIDEO_MB，默认 400）：
+# amane 只做到 100MB 时，100~400MB 的碎片仍会被登记成条目。
+RECOMMENDED_MIN_FILE_SIZE = media_policy.min_video_bytes()
+RECOMMENDED_MIN_FILE_SIZE_MB = RECOMMENDED_MIN_FILE_SIZE // (1024 * 1024)
 # 下载目录里最常见的非影片产物，amane 应列入 blacklist_patterns。
 # ⚠️ amane 的 blacklist_patterns 是**正则**不是 glob：`*.url` 会被告警
 # "nothing to repeat at position 0"（422），必须是 `.*\.url$` 这种写法。
@@ -32,6 +36,48 @@ AD_BLACKLIST_KEYWORDS = (
     "url", "txt", "exe", "lnk", "html", "jpg", "part", "sample", "广告", "推广", "宣传",
 )
 LIBRARY_CACHE_TTL = 60.0
+
+
+def find_staging_leaks(items: List[Dict[str, Any]], delivery_folder: str) -> List[Dict[str, Any]]:
+    """从 Jellyfin 条目里挑出仍指向投递暂存目录的条目。
+
+    投递目录（`/hp/_incoming`）在媒体库根目录里，Jellyfin 不像 amane 有
+    `min_file_size` / `blacklist_patterns`，扫到什么都会建条目：种子自带的
+    广告样片（10~20MB 的「直播」「社區情報」mp4）会被当成影片入库。
+    2026-10-17 生产实测：MFCW-065 / SSNI-676 目录下的广告片成为独立影片条目。
+    """
+    prefix = str(delivery_folder or "").strip().rstrip("/")
+    if not prefix:
+        return []
+    prefix += "/"
+    leaks: List[Dict[str, Any]] = []
+    for item in items or []:
+        data = item if isinstance(item, dict) else {}
+        path = str(data.get("Path") or "")
+        if path.startswith(prefix):
+            leaks.append({
+                "id": str(data.get("Id") or ""),
+                "name": str(data.get("Name") or ""),
+                "path": path,
+            })
+    return leaks
+
+
+def staging_leak_check(items: List[Dict[str, Any]], delivery_folder: str) -> Dict[str, Any]:
+    """媒体栈自检的一项：Jellyfin 里有没有指向投递暂存目录的条目。"""
+    leaks = find_staging_leaks(items, delivery_folder)
+    folder = str(delivery_folder or "").strip() or "(未配置投递目录)"
+    sample = "、".join(leak["name"][:24] for leak in leaks[:3])
+    return {
+        "id": "staging_leak",
+        "name": "Jellyfin 暂存目录",
+        "status": "ok" if not leaks else "warn",
+        "detail": "无条目指向暂存目录" if not leaks else f"{len(leaks)} 条指向 {folder}：{sample}",
+        "hint": "" if not leaks else (
+            f"暂存目录里的广告/半成品会被 Jellyfin 当成影片。在 {folder} 放一个**空**文件 .ignore"
+            "（文件名就是 .ignore，内容必须为空），再重扫媒体库并删掉这些条目"
+        ),
+    }
 
 
 def _mask_token(token: str) -> str:
@@ -83,7 +129,7 @@ def review_library(library: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not isinstance(min_size, int) or min_size < RECOMMENDED_MIN_FILE_SIZE:
         suggestions.append(_suggestion(
             "min_file_size", min_size, RECOMMENDED_MIN_FILE_SIZE,
-            "小于 100MB 的基本是广告样片/假种子产物，应在入库前被过滤。",
+            f"小于 {RECOMMENDED_MIN_FILE_SIZE_MB}MB 的基本是广告样片/假种子产物，应在入库前被过滤。",
         ))
 
     blacklist = library.get("blacklist_patterns") or []
@@ -342,7 +388,8 @@ class AmaneService:
                     if not any(s["field"] in ("min_file_size", "blacklist_patterns") for s in lib["suggestions"])]
         add("filters", "广告/样片过滤", len(filtered) == len(libraries) and bool(libraries),
             f"{len(filtered)}/{len(libraries)} 个库过滤到位",
-            "补 min_file_size ≥ 100MB 与 blacklist_patterns" if len(filtered) != len(libraries) else "")
+            "补 min_file_size ≥ %sMB 与 blacklist_patterns" % RECOMMENDED_MIN_FILE_SIZE_MB
+            if len(filtered) != len(libraries) else "")
 
         return {
             "ok": all(c["status"] != "fail" for c in checks),

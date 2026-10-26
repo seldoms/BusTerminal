@@ -212,6 +212,35 @@ AMANE_HEAL_STUCK_AFTER_SECONDS: int = min(
 # 每轮最多处理几部：1 ~ 50
 AMANE_HEAL_BATCH_LIMIT: int = min(get_int_env('AMANE_HEAL_BATCH_LIMIT', 10, minimum=1), 50)
 
+# ========== 400MB 碎片/广告清理（策略本体在 media_policy.py） ==========
+# 阈值只有一个旋钮 JUNK_MIN_VIDEO_MB（默认 400），junk_sweeper 容器读同一个变量；
+# 这里不重复定义，判定一律走 media_policy.min_video_bytes()。
+#
+# 索引层巡检：把 amane media_files 与 Jellyfin 里体积不足的条目删掉。
+# **默认开启**——文件层由 junk_sweeper 容器删，索引层不跟着删的话，
+# 下次扫描/刷新会把条目建回来，用户在这期间还能看到广告片。
+JUNK_SWEEP_ENABLED: bool = os.getenv(
+    'JUNK_SWEEP_ENABLED', 'true',
+).strip().lower() not in ('0', 'false', 'no', 'off')
+# 巡检间隔（秒）：15 分钟 ~ 7 天，默认 6 小时（碎片不着急，但别攒太久）
+JUNK_SWEEP_INTERVAL_SECONDS: int = min(
+    get_int_env('JUNK_SWEEP_INTERVAL_SECONDS', 6 * 3600, minimum=900), 7 * 24 * 3600
+)
+# qB 补扫节奏（秒）：纯广告种子几秒就下完，要比索引巡检密得多，默认 10 分钟
+JUNK_TORRENT_SWEEP_SECONDS: int = min(
+    get_int_env('JUNK_TORRENT_SWEEP_SECONDS', 600, minimum=60), 24 * 3600
+)
+# 只列不删（观察模式）：首次上线或调阈值时用
+JUNK_SWEEP_DRY_RUN: bool = os.getenv(
+    'JUNK_SWEEP_DRY_RUN', 'false',
+).strip().lower() in ('1', 'true', 'yes', 'on')
+# 每轮最多删多少条，防「size 字段算错」时一次清空整个库
+JUNK_SWEEP_MAX_DELETES: int = min(get_int_env('JUNK_SWEEP_MAX_DELETES', 200, minimum=1), 2000)
+# qB 侧：整种没有任何 ≥ 阈值的正片（纯广告种子）→ 直接删种 + 删文件
+JUNK_DELETE_TORRENTS: bool = os.getenv(
+    'JUNK_DELETE_TORRENTS', 'true',
+).strip().lower() not in ('0', 'false', 'no', 'off')
+
 # ========== 服务与目录配置 ==========
 DELIVERY_FOLDER: str = os.getenv('DELIVERY_FOLDER', '/downloads/staging')
 

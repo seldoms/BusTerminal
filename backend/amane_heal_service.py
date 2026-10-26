@@ -34,6 +34,7 @@ class AmaneHealService:
         db: Any,
         amane_service: Any,
         amane_client: Any = None,
+        jellyfin_client: Any = None,
         logger: Any,
         safe_exception_label: Any,
         display_value_for_log: Any,
@@ -42,6 +43,7 @@ class AmaneHealService:
         self.db = db
         self.amane_service = amane_service
         self._amane_client = amane_client
+        self._jellyfin_client = jellyfin_client
         self.logger = logger or logging.getLogger(__name__)
         self.safe_exception_label = safe_exception_label or (lambda exc: type(exc).__name__)
         self.display_value_for_log = display_value_for_log or (lambda value: str(value))
@@ -105,6 +107,7 @@ class AmaneHealService:
         number: Optional[str] = None,
         title: Optional[str] = None,
         library_id: Optional[int] = None,
+        refresh_jellyfin: bool = True,
     ) -> Dict[str, Any]:
         """按番号定位滞留的 media_file，补号后推完刮削与整理。不抛业务异常。"""
         number = str(number or movie_id or "").strip().upper()
@@ -175,6 +178,7 @@ class AmaneHealService:
             )
 
         # ④ 整理（amane 未开放自动整理，需显式触发）
+        organized = False
         if self._organize_enabled():
             library_id = library_id or self._resolve_library_id()
             if library_id is None:
@@ -193,8 +197,14 @@ class AmaneHealService:
                     result, title, "organize",
                     AmaneError(str(organize_task.get("error") or "organize_failed")),
                 )
+            organized = True
 
-        # ⑤ 回写终态
+        # ⑤ 让 Jellyfin 重新扫描：amane 只是把文件挪进正式目录并写好 NFO/封面，
+        #    Jellyfin 不刷新就仍指着 _incoming 旧路径、没封面没标题（2026-10-17 生产实测）。
+        if organized and refresh_jellyfin:
+            self._refresh_jellyfin()
+
+        # ⑥ 回写终态
         result["healed"] = True
         result["stage"] = "completed"
         self._record(movie_id, title, "completed", "healed")
@@ -241,7 +251,10 @@ class AmaneHealService:
                 time.sleep(BATCH_INTERVAL_SECONDS)
             report["attempted"] += 1
             try:
-                outcome = self.heal_one(row.get("movie_id"), title=row.get("title"))
+                # 整批只刷新一次 Jellyfin（每条都刷会把慢盘上的库扫描打爆）。
+                outcome = self.heal_one(
+                    row.get("movie_id"), title=row.get("title"), refresh_jellyfin=False
+                )
             except Exception as exc:  # 兜底：单条意外不能拖垮整批
                 outcome = {
                     "movie_id": row.get("movie_id"),
@@ -258,6 +271,8 @@ class AmaneHealService:
                 report["skipped"] += 1
             else:
                 report["failed"] += 1
+        if report["healed"]:
+            report["jellyfin_refresh"] = self._refresh_jellyfin()
         return report
 
     # ---------- 内部 ----------
@@ -269,6 +284,23 @@ class AmaneHealService:
         if self.amane_service is None:
             return None
         return self.amane_service.get_client()
+
+    def _refresh_jellyfin(self) -> bool:
+        """通知 Jellyfin 重扫库；失败只记日志，不影响自愈结果。"""
+        client = self._jellyfin_client
+        if client is None:
+            return False
+        try:
+            reload_config = getattr(client, "reload_config", None)
+            if callable(reload_config):
+                reload_config()
+            client.refresh_library()
+            return True
+        except Exception as exc:
+            self.logger.warning(
+                "amane heal jellyfin refresh failed: %s", self.safe_exception_label(exc)
+            )
+            return False
 
     @staticmethod
     def _pick_media(items: List[Dict[str, Any]], number: str) -> Optional[Dict[str, Any]]:

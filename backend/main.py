@@ -17,6 +17,9 @@ from datetime import date, datetime, timedelta
 # Centralized configuration module.
 import config
 
+# 400MB 以下视频 = 碎片/广告：阈值与判定只在 media_policy 一处定义。
+import media_policy
+
 from api_param_utils import (
     TRANSLATION_BATCH_LIMIT,
     TRANSLATION_TEXT_MAX_LENGTH,
@@ -85,8 +88,9 @@ from amane_client import (
 )
 from amane_heal_service import AmaneHealService
 from amane_ingest_service import AmaneIngestService
-from amane_service import AmaneService
+from amane_service import AmaneService, staging_leak_check
 from jellyfin_service import JellyfinService
+from junk_sweep_service import JunkSweepService
 from maintenance_service import MaintenanceService
 from movie_download_service import (
     extract_movie_id_from_download_source,
@@ -940,12 +944,15 @@ async def get_jable_hot_movies(
         movies, pending_translation_count = await run_in_threadpool(
             scraper.filter_processed_movies, movies
         )
+        # 全局屏蔽词：Jable 热榜同样不给展示
+        movies, blocked_count = get_onboarding_service().filter_blocked_movies(movies)
         return {
             "success": True,
             "data": movies,
             "page": page,
             "count": len(movies),
             "pending_translation_count": pending_translation_count,
+            "blocked_count": blocked_count,
             "source": "jable"
         }
     except Exception as e:
@@ -1058,6 +1065,11 @@ async def get_discovery_movies(
             page,
             safe_rank_type,
         )
+
+        # 全局屏蔽词：raw 流同样不给展示（下载侧另有闸门兜底）
+        if isinstance(result, dict) and isinstance(result.get("data"), list):
+            kept, blocked_count = get_onboarding_service().filter_blocked_movies(result["data"])
+            result = {**result, "data": kept, "blocked_count": blocked_count}
 
         return {
             "success": True,
@@ -1997,6 +2009,18 @@ async def startup_event():
             interval=f"{config.AMANE_HEAL_INTERVAL_SECONDS}s",
         )
 
+    # 400MB 碎片清理：文件层在 junk_sweeper 容器，这里只对账索引（amane/Jellyfin）。
+    # 与 heal 同理放在常驻区——它收拾的就是入库链路留下的垃圾，被
+    # DISABLE_STARTUP_TASKS 挡掉等于没开。
+    if config.JUNK_SWEEP_ENABLED:
+        start_background_task(
+            "junk_sweep_loop",
+            junk_sweep_loop,
+            description="Delete sub-400MB fragment entries from amane and Jellyfin",
+            category="media",
+            interval=f"{config.JUNK_SWEEP_INTERVAL_SECONDS}s",
+        )
+
     if str(os.getenv("BUS_TERMINAL_DISABLE_STARTUP_TASKS", "")).lower() in ("1", "true", "yes", "on"):
         logger.warning("Startup background tasks disabled by BUS_TERMINAL_DISABLE_STARTUP_TASKS")
         if not os.path.exists(COVER_CACHE_DIR):
@@ -2386,11 +2410,11 @@ def get_subscription_service() -> SubscriptionService:
     return _subscription_service
 
 
-MIN_JAV_VIDEO_FILE_SIZE_BYTES = 400 * 1024 * 1024
+MIN_JAV_VIDEO_FILE_SIZE_BYTES = media_policy.MIN_PLAYABLE_VIDEO_BYTES
 JAV_FILE_FILTER_TAG = "smart_filter_400mb"
 SEEDING_LIMIT_TAG = "seeding_limit_set"
 DOWNLOAD_RECORDED_TAG = "download_recorded"
-VIDEO_FILE_EXTS = {".mp4", ".mkv", ".avi", ".wmv", ".mov", ".flv", ".rmvb", ".ts", ".m2ts"}
+VIDEO_FILE_EXTS = media_policy.VIDEO_FILE_EXTS
 
 def normalize_qb_tags(raw_tags: Any) -> List[str]:
     return get_download_service().normalize_qb_tags(raw_tags)
@@ -2654,6 +2678,74 @@ def amane_heal_loop():
         except Exception as e:
             logger.error("amane heal loop failed: %s", safe_exception_label(e))
         stop_event.wait(interval)
+
+
+def junk_sweep_loop():
+    """400MB 以下碎片巡检（索引层）。
+
+    链路分工：
+      · qB 选文件/补扫（download_service）——下载前就不让碎片进盘；
+      · junk_sweeper 容器（栈 43，直扫 /hp）——盘上已有的物理删掉；
+      · 本循环——对账 amane media_files 与 Jellyfin 条目，把「文件没了/本就不该在」
+        的条目删掉。三层缺一层都会留残渣：只删文件不删索引，下次扫描建回来。
+
+    **默认开启**（JUNK_SWEEP_ENABLED=true）；JUNK_SWEEP_DRY_RUN=true 可先只观察。
+    两种节奏：qB 补扫每 `JUNK_TORRENT_SWEEP_SECONDS`（默认 10 分钟）一次，
+    索引对账每 `JUNK_SWEEP_INTERVAL_SECONDS`（默认 6 小时）一次 —— 前者要快，
+    后者要全库翻页，别互相拖累。单条失败不影响整轮，amane/Jellyfin 不可用时只记日志。
+    """
+    interval = config.JUNK_SWEEP_INTERVAL_SECONDS
+    # qB 补扫要比索引巡检密：纯广告种子几秒就下完，等 6 小时才删太晚
+    tick = min(config.JUNK_TORRENT_SWEEP_SECONDS, interval)
+    index_every = max(1, int(interval // tick))
+    dry_run = config.JUNK_SWEEP_DRY_RUN
+    rounds = 0
+    while not stop_event.is_set():
+        torrent_report: Dict[str, Any] = {}
+        try:
+            # qB 侧补扫：小种子几秒下完，groom 的过滤永远轮不到它 —— 纯广告种子在这里删干净
+            download_service = get_download_service()
+            download_service.get_qb_session = get_qb_session
+            torrent_report = download_service.delete_junk_torrents_once(
+                filter_torrent_files=filter_jav_torrent_files
+            )
+        except Exception as e:
+            logger.error("junk torrent sweep failed: %s", safe_exception_label(e))
+
+        if rounds % index_every == 0:
+            try:
+                report = get_junk_sweep_service().sweep(dry_run=dry_run)
+                matched = int(report.get("matched") or 0)
+                deleted = int(report.get("deleted") or 0)
+                if matched or torrent_report.get("deleted"):
+                    logger.warning(
+                        "junk sweep: entries matched=%s deleted=%s dry_run=%s "
+                        "(amane=%s jellyfin=%s) torrents_deleted=%s below %sMB",
+                        matched,
+                        deleted,
+                        dry_run,
+                        (report.get("amane") or {}).get("matched"),
+                        (report.get("jellyfin") or {}).get("matched"),
+                        torrent_report.get("deleted"),
+                        report.get("min_size_mb"),
+                    )
+                task_registry.mark_success(
+                    "junk_sweep_loop",
+                    summary={
+                        "matched": matched,
+                        "deleted": deleted,
+                        "dry_run": dry_run,
+                        "torrents_deleted": int(torrent_report.get("deleted") or 0),
+                    },
+                )
+            except Exception as e:
+                logger.error("junk sweep loop failed: %s", safe_exception_label(e))
+        elif torrent_report.get("deleted"):
+            logger.warning(
+                "junk torrents deleted: %s", torrent_report.get("deleted")
+            )
+        rounds += 1
+        stop_event.wait(tick)
 
 
 def gfriends_avatar_sync_loop():
@@ -3413,12 +3505,33 @@ def get_amane_heal_service() -> AmaneHealService:
         _amane_heal_service = AmaneHealService(
             db=db,
             amane_service=get_amane_service(),
+            jellyfin_client=jellyfin_client,
             logger=logger,
             safe_exception_label=safe_exception_label,
             display_value_for_log=display_value_for_log,
             config=config,
         )
     return _amane_heal_service
+
+
+_junk_sweep_service: Optional[JunkSweepService] = None
+
+
+def get_junk_sweep_service() -> JunkSweepService:
+    """400MB 以下碎片清理（索引层：amane media_files + Jellyfin 条目）。
+
+    文件层由栈内 junk_sweeper 容器删（它挂 /hp），这里只清索引，
+    否则文件删了、条目还在，下次扫描又建回来。
+    """
+    global _junk_sweep_service
+    if _junk_sweep_service is None:
+        _junk_sweep_service = JunkSweepService(
+            amane_client=get_amane_service().get_client(require_token=False),
+            jellyfin_client=jellyfin_client,
+            logger=logger,
+            max_deletes_per_run=config.JUNK_SWEEP_MAX_DELETES,
+        )
+    return _junk_sweep_service
 
 
 def run_amane_ingest(movie_id: str, *, title: Optional[str] = None, source: str = "qb_download_completed") -> None:
@@ -3517,10 +3630,51 @@ async def get_amane_inventory(force: bool = False):
     return {"success": True, "data": data}
 
 
+def build_staging_leak_check() -> Dict[str, Any]:
+    """Jellyfin 侧过滤检查：库根覆盖了投递暂存目录时，广告片会被当成影片入库。
+
+    BusTerminal 自己扫不到文件，所以只能反过来问 Jellyfin：库里有没有条目的
+    Path 还落在投递目录（默认 /hp/_incoming）下面。
+    """
+    delivery = db.get_config("delivery_folder") or config.DELIVERY_FOLDER
+    items = jellyfin_client.list_library_items_raw(fields="Path", page_size=500)
+    return staging_leak_check(items, delivery)
+
+
 @app.get("/api/amane/selfcheck")
 async def get_amane_selfcheck():
     """媒体栈自检：链路上哪一环没通。"""
-    return {"success": True, "data": await run_in_threadpool(get_amane_service().get_selfcheck)}
+    data = await run_in_threadpool(get_amane_service().get_selfcheck)
+    try:
+        leak_check = await run_in_threadpool(build_staging_leak_check)
+    except Exception as exc:
+        leak_check = {
+            "id": "staging_leak",
+            "name": "Jellyfin 暂存目录",
+            "status": "warn",
+            "detail": f"检查失败：{safe_exception_label(exc)}",
+            "hint": "",
+        }
+    data.setdefault("checks", []).append(leak_check)
+    data["ok"] = bool(data.get("ok")) and leak_check["status"] != "fail"
+    return {"success": True, "data": data}
+
+
+@app.post("/api/maintenance/junk-sweep")
+async def run_junk_sweep(
+    dry_run: bool = True,
+    min_size_mb: Optional[int] = Query(None, ge=16, le=10240),
+):
+    """清掉 amane / Jellyfin 里 400MB 以下的碎片条目。
+
+    默认 dry_run=True（只列不改），确认清单后传 dry_run=false 才真删。
+    文件层不在这个接口里：物理删除由栈内 junk_sweeper 容器负责。
+    """
+    min_bytes = min_size_mb * 1024 * 1024 if min_size_mb else None
+    report = await run_in_threadpool(
+        lambda: get_junk_sweep_service().sweep(dry_run=dry_run, min_bytes=min_bytes)
+    )
+    return {"success": True, "data": report}
 
 
 @app.get("/api/amane/tasks")
@@ -3947,6 +4101,36 @@ async def check_onboarding_database(payload: Dict[str, Any] = Body(default={})):
     return {"success": True, "data": data}
 
 
+@app.get("/api/block-keywords")
+async def get_block_keywords():
+    """全局关键词屏蔽策略：读当前生效的屏蔽词与默认值。
+
+    屏蔽词同时作用于展示链路（发现流 / 首页 / 搜索 / Jable / 生命周期 / 详情）
+    与下载链路（手动下载、订阅、自动化都过 evaluate_download_permission）。
+    """
+    service = get_onboarding_service()
+
+    def run_read() -> Dict[str, Any]:
+        return {
+            "keywords": service.get_block_keywords(),
+            "defaults": list(onboarding_service.DEFAULT_BLOCK_KEYWORDS),
+            "max_keywords": onboarding_service.MAX_BLOCK_KEYWORDS,
+            "max_keyword_length": onboarding_service.MAX_BLOCK_KEYWORD_LENGTH,
+        }
+
+    return {"success": True, "data": await run_in_threadpool(run_read)}
+
+
+@app.post("/api/block-keywords")
+async def update_block_keywords(payload: Dict[str, Any] = Body(default={})):
+    """保存全局屏蔽词。空串是合法值（= 主动关闭屏蔽），必须照原样落库。"""
+    raw = payload.get("block_keywords") if isinstance(payload, dict) else None
+    keywords = await run_in_threadpool(get_onboarding_service().set_block_keywords, raw)
+    # 只记数量，不记内容：屏蔽词里往往就是不想看到的东西
+    logger.info("Block keywords updated: count=%s", len(keywords))
+    return {"success": True, "data": {"keywords": keywords}}
+
+
 @app.post("/api/onboarding/block-keywords/preview")
 async def preview_block_keywords(payload: Dict[str, Any] = Body(default={})):
     """按填好的屏蔽词试算：从本地库里捞出会被挡掉的条目，让用户保存前先看效果。"""
@@ -3960,20 +4144,10 @@ async def preview_block_keywords(payload: Dict[str, Any] = Body(default={})):
 
     def run_preview() -> Dict[str, Any]:
         service = get_onboarding_service()
-        saved = service.db.get_config(onboarding_service.BLOCK_KEYWORDS_KEY)
         keywords = onboarding_service.parse_block_keywords(raw)
-        # 试算期间临时把候选词写进 config，让 is_blocked/filter 用到同一份词
-        if keywords != onboarding_service.parse_block_keywords(saved):
-            service.db.set_config(
-                onboarding_service.BLOCK_KEYWORDS_KEY, ",".join(keywords)
-            )
-        try:
-            matched = service.preview_blocked_movies(limit)
-            return {"keywords": keywords, "items": matched}
-        finally:
-            service.db.set_config(
-                onboarding_service.BLOCK_KEYWORDS_KEY, ",".join(onboarding_service.parse_block_keywords(saved))
-            )
+        # 纯内存试算：不再把候选词临时写进 config（写库会让并发请求短暂用上未保存的词）
+        matched = service.preview_blocked_movies(limit, keywords=keywords)
+        return {"keywords": keywords, "items": matched}
 
     data = await run_in_threadpool(run_preview)
     return {"success": True, "data": data}
@@ -4300,6 +4474,20 @@ async def get_movie_detail(
     )
     if detail is None:
         detail = await run_in_threadpool(scraper.get_movie_detail, safe_url, False)
+    # 全局屏蔽词：详情页也不给看，否则从旧链接 / 外部跳转能绕过列表过滤
+    detail_payload = detail if isinstance(detail, dict) else {}
+    blocked = get_onboarding_service().is_blocked(
+        resolved.get("movie_id"),
+        detail_payload.get("title"),
+        detail_payload.get("original_title"),
+    )
+    if blocked.get("blocked"):
+        return {
+            "success": False,
+            "message": "blocked_keyword",
+            "blocked_keyword": blocked.get("keyword"),
+            "data": {},
+        }
     queue_actress_metadata_from_detail(detail, "movie_detail")
     return {"success": True, "data": detail}
 
@@ -4315,6 +4503,16 @@ async def select_magnet(
     resolved = resolve_movie_detail_url_for_download(url, movie_id=movie_id, title=title)
     if not resolved:
         return {"success": False, "message": "movie_code_not_found", "data": None, "magnets": []}
+    # 全局屏蔽词：命中就不去抓磁力（下载队列那道闸门在 evaluate_download_permission）
+    blocked = get_onboarding_service().is_blocked(resolved.get("movie_id"), title)
+    if blocked.get("blocked"):
+        return {
+            "success": False,
+            "message": "blocked_keyword",
+            "blocked_keyword": blocked.get("keyword"),
+            "data": None,
+            "magnets": [],
+        }
     safe_url = resolved["url"]
     # 同 /api/detail：先吃缓存，缓存里没磁力才去原站抓
     detail = await run_in_threadpool(
@@ -4610,7 +4808,9 @@ async def get_lifecycle_movies(
         limit=limit,
         offset=offset,
     )
-    return {"success": True, "data": rows}
+    # 全局屏蔽词：生命周期列表是「我的片库流转」视图，命中屏蔽的条目不出现在页面上
+    rows, blocked_count = get_onboarding_service().filter_blocked_movies(rows)
+    return {"success": True, "data": rows, "blocked_count": blocked_count}
 
 
 @app.get("/api/lifecycle/movies/{movie_id}/events")
@@ -4796,7 +4996,18 @@ async def get_actresses(
 
 @app.get("/api/actress/{actress_id}")
 async def get_actress_detail(actress_id: str):
-    return await run_in_threadpool(get_actress_service().get_detail, actress_id)
+    detail = await run_in_threadpool(get_actress_service().get_detail, actress_id)
+    # 全局屏蔽词：演员页的作品列表同样摘掉命中条目（否则从演员页能绕过列表过滤）
+    if isinstance(detail, dict) and isinstance(detail.get("data"), dict):
+        movies = detail["data"].get("movies")
+        if isinstance(movies, list):
+            kept, blocked_count = get_onboarding_service().filter_blocked_movies(movies)
+            detail = {
+                **detail,
+                "data": {**detail["data"], "movies": kept},
+                "blocked_count": blocked_count,
+            }
+    return detail
 
 
 @app.post("/api/actresses/avatar/sync")
@@ -4986,11 +5197,14 @@ async def search_movies(
             scraper.filter_processed_movies, movies
         )
         schedule_image_cache_warmup(movies, "search")
+        # 全局屏蔽词：搜索结果同样不给展示
+        movies, blocked_count = get_onboarding_service().filter_blocked_movies(movies)
         return {
             "success": True,
             "data": movies,
             "count": len(movies),
             "pending_translation_count": pending_translation_count,
+            "blocked_count": blocked_count,
         }
     except Exception as e:
         logger.error("Search movies failed: %s", safe_exception_label(e))

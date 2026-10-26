@@ -17,6 +17,7 @@ from amane_client import (
 from amane_service import (
     AD_BLACKLIST_HINTS,
     AD_BLACKLIST_KEYWORDS,
+    RECOMMENDED_MIN_FILE_SIZE,
     AmaneService,
     review_library,
 )
@@ -193,7 +194,7 @@ class ReviewLibraryTest(unittest.TestCase):
     def test_healthy_library_has_no_blocking_suggestion(self):
         library = {
             "id": 1, "name": "hp", "path": "/hp", "automation": "watch", "ingest": "native",
-            "recursive": True, "min_file_size": 200 * 1024 * 1024,
+            "recursive": True, "min_file_size": RECOMMENDED_MIN_FILE_SIZE,
             "blacklist_patterns": list(AD_BLACKLIST_HINTS),
             "write_nfo": True,  # 方案 C：NFO 由 amane 写，BusTerminal 侧靠 Organizer 闸门不写
         }

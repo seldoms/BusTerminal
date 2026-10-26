@@ -2,12 +2,15 @@ import os
 import time
 from typing import Any, Callable, Dict, List, Optional
 
+import media_policy
 
-MIN_JAV_VIDEO_FILE_SIZE_BYTES = 400 * 1024 * 1024
+
+# 阈值只有一处定义（media_policy），这里保留旧名字给既有调用/测试用
+MIN_JAV_VIDEO_FILE_SIZE_BYTES = media_policy.MIN_PLAYABLE_VIDEO_BYTES
 JAV_FILE_FILTER_TAG = "smart_filter_400mb"
 SEEDING_LIMIT_TAG = "seeding_limit_set"
 DOWNLOAD_RECORDED_TAG = "download_recorded"
-VIDEO_FILE_EXTS = {".mp4", ".mkv", ".avi", ".wmv", ".mov", ".flv", ".rmvb", ".ts", ".m2ts"}
+VIDEO_FILE_EXTS = media_policy.VIDEO_FILE_EXTS
 
 
 class DownloadService:
@@ -270,6 +273,53 @@ class DownloadService:
             return False
         return self.safe_number(torrent.get("total_size") or torrent.get("size")) > 0
 
+    def is_completed_torrent(self, torrent: Dict[str, Any]) -> bool:
+        """已完成（progress=100）的种子。
+
+        这一档原先被 is_groomable_torrent 排除，于是**小种子几秒下完就再没人看**
+        —— 400MB 过滤永远跑不到它，种子自带的广告 mp4 就这么落到盘上了。
+        补扫这一档只为「判定整种是不是纯垃圾」，不参与投递。
+        """
+        if not isinstance(torrent, dict):
+            return False
+        return (
+            self.safe_number(torrent.get("progress")) >= 1
+            and self.safe_number(torrent.get("total_size") or torrent.get("size")) > 0
+        )
+
+    def should_delete_junk_torrents(self) -> bool:
+        """整种没有任何 ≥400MB 正片时，删种+删文件（默认开）。
+
+        原来的行为只是把文件优先级全设 0：种子留在列表里、目录也留着，
+        下次人工还得清一遍。策略上这就是纯垃圾，直接删干净。
+        """
+        fallback = bool(getattr(self.config, "JUNK_DELETE_TORRENTS", True))
+        return bool(self.get_bool_config("junk_delete_torrents", fallback))
+
+    def delete_junk_torrent(self, session: Any, base_url: str, torrent: Dict[str, Any]) -> bool:
+        torrent_hash = str(torrent.get("hash") or "").strip()
+        if not torrent_hash:
+            return False
+        if not self.should_delete_junk_torrents():
+            return False
+        try:
+            ok = bool(self.qb_api.delete_torrents(session, base_url, [torrent_hash], delete_files=True))
+        except Exception as exc:
+            self.logger.warning(
+                "Junk torrent delete failed: %s (%s)",
+                self.display_value_for_log(torrent.get("name")),
+                self.safe_exception_label(exc),
+            )
+            return False
+        if ok:
+            self.logger.warning(
+                "Junk torrent deleted (no file >= %sMB): %s (hash=%s)",
+                MIN_JAV_VIDEO_FILE_SIZE_BYTES // (1024 * 1024),
+                self.display_value_for_log(torrent.get("name")),
+                self.display_value_for_log(torrent_hash),
+            )
+        return ok
+
     def filter_jav_torrent_files(self, session: Any, base_url: str, torrent: Dict[str, Any]) -> Dict[str, Any]:
         torrent_hash = torrent.get("hash")
         if not torrent_hash:
@@ -359,6 +409,7 @@ class DownloadService:
         filtered = 0
         skipped = 0
         small_files_disabled = 0
+        deleted_junk = 0
         filter_torrent_files = filter_torrent_files or self.filter_jav_torrent_files
 
         for torrent in torrents or []:
@@ -366,7 +417,10 @@ class DownloadService:
                 skipped += 1
                 continue
             tags = set(self.normalize_qb_tags(torrent.get("tags")))
-            if JAV_FILE_FILTER_TAG in tags or not self.is_groomable_torrent(torrent):
+            # 已完成的也要补扫：小种子几秒下完，is_groomable_torrent 早就 False 了
+            if JAV_FILE_FILTER_TAG in tags or not (
+                self.is_groomable_torrent(torrent) or self.is_completed_torrent(torrent)
+            ):
                 skipped += 1
                 continue
 
@@ -374,8 +428,12 @@ class DownloadService:
             result = filter_torrent_files(session, base_url, torrent)
             if result.get("filtered"):
                 filtered += 1
-            else:
-                small_files_disabled += int(result.get("small_files_disabled") or 0)
+                continue
+            small_files_disabled += int(result.get("small_files_disabled") or 0)
+            if result.get("reason") == "no_video_over_400mb" and self.delete_junk_torrent(
+                session, base_url, torrent
+            ):
+                deleted_junk += 1
 
         return {
             "success": True,
@@ -383,7 +441,56 @@ class DownloadService:
             "filtered": filtered,
             "skipped": skipped,
             "small_files_disabled": small_files_disabled,
-            "min_file_size_mb": 400,
+            "deleted_junk": deleted_junk,
+            "min_file_size_mb": MIN_JAV_VIDEO_FILE_SIZE_BYTES // (1024 * 1024),
+        }
+
+    def delete_junk_torrents_once(
+        self,
+        filter_torrent_files: Optional[Callable[[Any, str, Dict[str, Any]], Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """补扫「已经下完、但 400MB 过滤没跑过」的种子，纯垃圾就删种+删文件。
+
+        groom 循环只处理未完成的种子（is_groomable_torrent），小种子几秒下完，
+        过滤根本轮不到它——这就是广告 mp4 落盘的真正入口。这里专门补这一档：
+        只判定、不投递，发现整种没有任何 ≥ 阈值的正片就直接删掉。
+        """
+        session, base_url = self.get_qb_session()
+        if not session:
+            return {"success": False, "message": "QB is not configured or unavailable"}
+
+        filter_torrent_files = filter_torrent_files or self.filter_jav_torrent_files
+        scanned = 0
+        deleted = 0
+        errors = 0
+        for torrent in self.qb_api.get_torrents(session, base_url, tag="jav") or []:
+            if not isinstance(torrent, dict):
+                continue
+            tags = set(self.normalize_qb_tags(torrent.get("tags")))
+            if JAV_FILE_FILTER_TAG in tags or not self.is_completed_torrent(torrent):
+                continue
+            scanned += 1
+            try:
+                result = filter_torrent_files(session, base_url, torrent)
+            except Exception as exc:
+                errors += 1
+                self.logger.warning(
+                    "Junk torrent scan failed: %s (%s)",
+                    self.display_value_for_log(torrent.get("name")),
+                    self.safe_exception_label(exc),
+                )
+                continue
+            if result.get("reason") != "no_video_over_400mb":
+                continue
+            if self.delete_junk_torrent(session, base_url, torrent):
+                deleted += 1
+
+        return {
+            "success": True,
+            "scanned": scanned,
+            "deleted": deleted,
+            "errors": errors,
+            "min_file_size_mb": MIN_JAV_VIDEO_FILE_SIZE_BYTES // (1024 * 1024),
         }
 
     def groom_torrents_task(
@@ -460,7 +567,8 @@ class DownloadService:
 
                     if JAV_FILE_FILTER_TAG not in tags and self.is_groomable_torrent(torrent):
                         self.logger.info(
-                            "Applying JAV 400MB file filter: %s (hash=%s)",
+                            "Applying JAV %sMB file filter: %s (hash=%s)",
+                            MIN_JAV_VIDEO_FILE_SIZE_BYTES // (1024 * 1024),
                             self.display_value_for_log(torrent.get("name")),
                             self.display_value_for_log(torrent.get("hash")),
                         )
@@ -473,7 +581,11 @@ class DownloadService:
                                 filter_result.get("disabled_files"),
                             )
                             filtered_count += 1
-                        tags.append(JAV_FILE_FILTER_TAG)
+                            tags.append(JAV_FILE_FILTER_TAG)
+                        elif filter_result.get("reason") == "no_video_over_400mb":
+                            tags.append(JAV_FILE_FILTER_TAG)
+                        # 其它失败（file_priority_failed / tag_update_failed）不打卡，
+                        # 下一轮重试；打了卡就永远不会再补，垃圾会一直躺在盘上
 
                     if self.safe_number(torrent.get("progress"), 0) < 1 or "delivered" in tags:
                         continue

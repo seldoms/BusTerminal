@@ -9,7 +9,8 @@ import {
     Bell,
     Save,
     RefreshCw,
-    Layers
+    Layers,
+    Ban
 } from 'lucide-react';
 import './SettingsPage.css';
 import { useLayoutSettings } from '../layoutSettings';
@@ -35,12 +36,14 @@ import SettingsTranslateTab from './settings/SettingsTranslateTab';
 import SettingsJellyfinTab from './settings/SettingsJellyfinTab';
 import SettingsNotifyTab from './settings/SettingsNotifyTab';
 import SettingsMediaStackTab from './settings/SettingsMediaStackTab';
+import SettingsBlockKeywordsTab from './settings/SettingsBlockKeywordsTab';
 
 const CATEGORIES = [
     { id: 'layout', label: '界面与布局', icon: Sliders, desc: '卡片尺寸与页面宽度联动' },
     { id: 'cache', label: '缓存与性能', icon: Database, desc: '磁盘已用与图表数据清理' },
     { id: 'engine', label: '下载客户端', icon: HardDrive, desc: 'qBittorrent 参数与限速' },
     { id: 'network', label: '网络与代理', icon: Globe, desc: '节点代理与自动域名轮询' },
+    { id: 'block', label: '关键词屏蔽', icon: Ban, desc: '全局屏蔽词：展示与下载双链路拦截' },
     { id: 'translate', label: '多语言翻译', icon: Languages, desc: '百度/Google 翻译服务' },
     { id: 'integrate', label: 'Jellyfin 媒体', icon: Server, desc: '媒体库自动同步与清理' },
     { id: 'notify', label: '消息与通知', icon: Bell, desc: 'SMTP 邮件提醒设置' },
@@ -356,6 +359,8 @@ export default function SettingsPage() {
                             handleSysChange={handleSysChange}
                         />
                     )}
+
+                    {activeTab === 'block' && <SettingsBlockKeywordsTab />}
 
                     {activeTab === 'translate' && (
                         <SettingsTranslateTab

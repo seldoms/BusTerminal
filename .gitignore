@@ -100,3 +100,6 @@ Dockerfile.release
 !docs/images/*.png
 !docs/images/*.jpg
 !frontend/.env.production
+
+# pytest 临时目录（--basetemp 指定，避免 Windows 清临时目录崩 WinError 448）
+.pytest-tmp/
