@@ -393,6 +393,11 @@ export const movieApi = {
     controlTorrents: (data) => api.post('/api/qb/torrents/control', data),
     filterJavTorrentFiles: () => api.post('/api/qb/torrents/filter-jav-files'),
 
+    // 半夜静默模式：多个时间段内暂停 qB 上传/下载
+    getQBQuietHours: () => api.get('/api/qb/quiet-hours').then(r => r?.data ?? {}),
+    saveQBQuietHours: (data) => api.post('/api/qb/quiet-hours', data),
+    resumeQBQuietHours: () => api.post('/api/qb/quiet-hours/resume'),
+
     // 搜索电影 (本地数据库)
     searchMovies: (query, limit = 50, offset = 0) =>
         api.get('/api/search', { params: { q: query, limit, offset } }),
@@ -435,6 +440,11 @@ export const movieApi = {
     // 读 sysConfig.jellyfin_host 之类全是 undefined —— 表现为「保存后刷新就没了」。
     getSystemConfig: () => api.get('/api/config/system').then(r => r?.data ?? {}),
     updateSystemConfig: (data) => api.post('/api/config/system', data),
+
+    // --- 抓取节奏（设置页「抓取节奏」）---
+    // 各循环每轮重新读取，保存即生效，不用重启。
+    getScrapeSchedule: () => api.get('/api/config/schedule').then(r => r?.data ?? {}),
+    saveScrapeSchedule: (data) => api.post('/api/config/schedule', data),
 
     // --- 全局关键词屏蔽（展示 + 下载双链路）---
     getBlockKeywords: () => api.get('/api/block-keywords').then(r => r?.data ?? {}),
@@ -541,6 +551,8 @@ export const movieApi = {
 
 export const getSystemSettings = movieApi.getSystemConfig;
 export const saveSystemSettings = movieApi.updateSystemConfig;
+export const getScrapeSchedule = movieApi.getScrapeSchedule;
+export const saveScrapeSchedule = movieApi.saveScrapeSchedule;
 export const getQBConfig = movieApi.getQBConfig;
 export const saveQBConfig = movieApi.updateQBConfig;
 export const testQBConnection = movieApi.getQBStatus;

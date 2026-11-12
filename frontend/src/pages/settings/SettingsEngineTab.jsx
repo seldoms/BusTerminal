@@ -1,5 +1,6 @@
 import React from 'react';
 import { Activity, CheckCircle2, AlertCircle } from 'lucide-react';
+import QbQuietHoursCard from './QbQuietHoursCard';
 
 export default function SettingsEngineTab({
     qbConfig,
@@ -156,6 +157,9 @@ export default function SettingsEngineTab({
                     </div>
                 </div>
             </div>
+
+            {/* 半夜静默模式：自己读写的独立卡片，不参与「保存全部设置」 */}
+            <QbQuietHoursCard />
         </div>
     );
 }

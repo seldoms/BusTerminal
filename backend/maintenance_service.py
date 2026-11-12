@@ -1,8 +1,14 @@
 import os
+import re
 import threading
 import time
 from datetime import datetime
 from typing import Any, Callable, Dict, Optional
+
+import javbus_path
+
+# 回填游标的日期格式：严格的 YYYY-MM-DD（时间戳等脏数据不算）
+_BACKFILL_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 class MaintenanceService:
@@ -40,6 +46,8 @@ class MaintenanceService:
         queue_download_if_absent: Callable[[str, str, str, Optional[str]], Dict[str, Any]],
         select_due_pending_downloads: Callable[..., list],
         summarize_pending_downloads: Callable[[Any], Dict[str, Any]],
+        is_pending_exhausted: Callable[[Any], bool],
+        no_magnet_max_attempts: int,
         preload_information_flow_cache: Callable[..., Any],
         is_safe_cache_file: Callable[..., bool],
     ):
@@ -66,6 +74,8 @@ class MaintenanceService:
         self.queue_download_if_absent = queue_download_if_absent
         self.select_due_pending_downloads = select_due_pending_downloads
         self.summarize_pending_downloads = summarize_pending_downloads
+        self.is_pending_exhausted = is_pending_exhausted
+        self.no_magnet_max_attempts = no_magnet_max_attempts
         self.preload_information_flow_cache = preload_information_flow_cache
         self.is_safe_cache_file = is_safe_cache_file
         self.cache_size_limit_provider: Optional[Callable[[], float]] = None
@@ -267,7 +277,11 @@ class MaintenanceService:
     def pending_download_refresh_loop(self) -> None:
         while not self.stop_event.is_set():
             try:
-                pending_rows = self.db.get_pending_downloads_list(limit=500)
+                # 取全量 pending，且「最早加入优先」：等得最久的条目该先重试，
+                # 不能只盯着最新加入的那批（老条目会永远轮不到）。
+                pending_rows = self.db.get_pending_downloads_list(
+                    limit=5000, order_by_added=False
+                )
                 due_list = self.select_due_pending_downloads(pending_rows, limit=50)
                 if not due_list:
                     self.task_registry.mark_success(
@@ -283,6 +297,7 @@ class MaintenanceService:
 
                 success_count = 0
                 fail_count = 0
+                exhausted_count = 0
 
                 for item in due_list:
                     if self.stop_event.is_set():
@@ -290,6 +305,18 @@ class MaintenanceService:
 
                     m_id = item["movie_id"]
                     m_title = item.get("title", "Unknown")
+
+                    # 「源站没磁力」重试够多次：不再自动打源站（省请求也省带宽）。
+                    # 保留在 pending 里，等源站新增磁力或人工在页面上重试。
+                    if self.is_pending_exhausted(item):
+                        self.db.update_pending_download_status(
+                            m_id,
+                            "pending",
+                            note="No magnet on source; gave up after %s attempts"
+                            % self.no_magnet_max_attempts,
+                        )
+                        exhausted_count += 1
+                        continue
 
                     if self.db.is_movie_downloaded(m_id):
                         self.db.update_pending_download_status(m_id, "downloaded")
@@ -304,11 +331,14 @@ class MaintenanceService:
 
                     try:
                         self.logger.info("Searching magnet links for pending movie %s", m_id)
-                        detail_url = f"{self.scraper.base_url}/{m_id}"
+                        # 番号要换成 JavBus 的路径形态：库里 id 有 amane 的 0 填充写法
+                        # （jur00696 / gma00090），直接拼进 URL 必然 404
+                        # （2026-11-07 实测：gma00090 → 404，GMA-090 → 200 且有 gid）。
+                        detail_url = javbus_path.build_detail_url(self.scraper.base_url, m_id)
                         detail = self.scraper.get_movie_detail(detail_url, perform_translate=False)
 
                         if detail and detail.get("magnets"):
-                            best_magnet = self.scraper.select_best_magnet(detail["magnets"], preference="1080P")
+                            best_magnet = self.scraper.select_alive_magnet(detail["magnets"], preference="1080P")
                             if best_magnet:
                                 selected_magnet = self.normalize_magnet_url(best_magnet.get("magnet"))
                                 if selected_magnet and self.db.get_active_queue_entry(movie_id=m_id, magnet=selected_magnet):
@@ -347,8 +377,14 @@ class MaintenanceService:
                         self.db.update_pending_download_status(m_id, "error", note=error_label)
                         fail_count += 1
 
-                summary = self.summarize_pending_downloads(self.db.get_pending_downloads_list(limit=500))
-                summary.update({"success": success_count, "failed": fail_count})
+                summary = self.summarize_pending_downloads(
+                    self.db.get_pending_downloads_list(limit=5000)
+                )
+                summary.update({
+                    "success": success_count,
+                    "failed": fail_count,
+                    "exhausted": exhausted_count,
+                })
                 self.task_registry.mark_success("pending_download_refresh_loop", summary=summary)
                 self.logger.info("Pending download refresh finished: success=%s, failed=%s", success_count, fail_count)
 
@@ -359,7 +395,7 @@ class MaintenanceService:
             self.stop_event.wait(self.pending_scan_interval_seconds)
 
     def run_translation_backfill_once(self, batch_size: int) -> Dict[str, Any]:
-        """从积压里按发行日期从新到旧取片子排进翻译队列（一个片子一个请求，由队列线程慢慢翻）。"""
+        """从积压里按发行日期从新到旧取片子排进翻译队列（一次一批，由队列线程慢慢翻）。"""
         if not getattr(self.scraper, "ollama_translator", None):
             return {"skipped": "local_llm_not_configured"}
 
@@ -368,13 +404,9 @@ class MaintenanceService:
             return {"skipped": "queue_full"}
 
         cursor = self.db.get_config(self.BACKFILL_CURSOR_KEY)
-        # 只认 "YYYY-..." 形式的日期游标；历史遗留的时间戳游标一律从头（最新发行）重来
-        if isinstance(cursor, str) and len(cursor) >= 4 and cursor[:4].isdigit():
-            cursor_date = cursor
-        else:
-            cursor_date = self.BACKFILL_CURSOR_START
+        cursor_date, cursor_title = self.parse_backfill_cursor(cursor)
 
-        rows = self.db.get_translation_backfill_batch(cursor_date, batch_size)
+        rows = self.db.get_translation_backfill_batch(cursor_date, batch_size, cursor_title)
         if not rows:
             # 从新到旧整轮扫完：回到最新发行日期重扫，捞漏翻/翻失败的
             self.db.set_config(self.BACKFILL_CURSOR_KEY, self.BACKFILL_CURSOR_START)
@@ -382,9 +414,48 @@ class MaintenanceService:
 
         titles = [row["original_title"] for row in rows]
         queued = self.scraper.queue_title_translations(titles, priority=False)
-        oldest = min(str(row["release_date"]) for row in rows)
-        self.db.set_config(self.BACKFILL_CURSOR_KEY, oldest)
-        return {"queued": queued, "cursor": oldest}
+        # 游标推到本批**最后一条**（按 release_date DESC, original_title ASC 排序）。
+        # 带上标题才能在同一天内继续往后翻 —— 只按日期推进会卡在这一天上，
+        # 后面 122 万条永远翻不到（2026-11-09 实测：2026-01-22 有 213 条待翻）。
+        oldest_date = min(str(row["release_date"]) for row in rows)
+        oldest_title = ""
+        for row in rows:
+            if str(row["release_date"]) == oldest_date:
+                oldest_title = str(row["original_title"])
+        next_cursor = self.format_backfill_cursor(oldest_date, oldest_title)
+        self.db.set_config(self.BACKFILL_CURSOR_KEY, next_cursor)
+        return {"queued": queued, "cursor": next_cursor}
+
+    @staticmethod
+    def parse_backfill_cursor(raw: Any) -> tuple:
+        """解析游标 → (日期, 标题)。兼容旧的纯日期游标（没有标题部分）。
+
+        旧游标只有日期时，标题留空 → 取数会带上当天的全部待翻条目，
+        第一轮就能把当天翻完并把游标推进到当天最后一条标题。
+
+        ⚠️ 日期必须严格是 `YYYY-MM-DD`：历史遗留的**时间戳**游标
+        （`2026-01-22T10:00:00`）不能当日期用 —— 它会被塞进 SQL 的
+        `release_date <= cursor` 里比较，既匹配不到任何一天，游标也会卡死。
+        """
+        text = str(raw or "").strip()
+        if not text:
+            return MaintenanceService.BACKFILL_CURSOR_START, ""
+        if "|" in text:
+            date_part, _, title_part = text.partition("|")
+            date_part = date_part.strip()
+            if _BACKFILL_DATE_RE.match(date_part):
+                return date_part, title_part.strip()
+            return MaintenanceService.BACKFILL_CURSOR_START, ""
+        if _BACKFILL_DATE_RE.match(text):
+            return text, ""
+        # 时间戳等历史脏数据一律从头重来
+        return MaintenanceService.BACKFILL_CURSOR_START, ""
+
+    @staticmethod
+    def format_backfill_cursor(date_str: str, title: str) -> str:
+        """日期|标题 的游标格式。"""
+        title = str(title or "").strip()
+        return f"{date_str}|{title}" if title else str(date_str)
 
     def translation_backfill_loop(self) -> None:
         """历史标题翻译回填喂料：连续把片子排进翻译队列，队列满了就等着，重启后按游标续跑。"""

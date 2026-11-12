@@ -1,7 +1,6 @@
 """gfriends 头像同步单测（全部离线，不发网络请求）。"""
 
 import os
-import random
 import sys
 from pathlib import Path
 
@@ -28,10 +27,10 @@ class _FakeDb:
         return None
 
     def get_actresses_missing_avatar(self, limit=None, randomize=False):
-        rows = list(self.rows)
-        if randomize:
-            random.shuffle(rows)
-        return rows if not limit else rows[:limit]
+        # `randomize` 是 2026-11-04 加的（避开「永远只扫存储顺序前 N 行」的饥饿），
+        # 生产调用方 `gfriends_avatar_sync_loop` 会传 randomize=True。
+        # 这里的 fake 之前没跟上签名，导致整组测试长期报 TypeError。
+        return self.rows if not limit else self.rows[:limit]
 
     def update_actress_avatars(self, updates):
         self.updates = list(updates)

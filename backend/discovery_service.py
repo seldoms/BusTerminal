@@ -1,11 +1,14 @@
 import re
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional
 
+import scrape_schedule
 from movie_normalization import normalize_movie_list
 from cover_upgrade_service import is_javdb_cover, should_replace_cover
+from scrape_budget import PURPOSE_PRELOAD, ScrapeBudget, source_for_url
+import javbus_path
 
 
 DISCOVERY_SOURCES = {"jable", "javbus", "javdb", "airav"}
@@ -16,6 +19,13 @@ INFORMATION_FLOW_CATEGORY_TARGETS = (
     ("hd", "/genre/hd"),
 )
 MAX_PRELOAD_PAGES = 30
+
+# 单个源连续失败到这个次数就进冷却期。2026-11-03 实测：jable.tv / javdb.com
+# 触发了 Cloudflare 封锁（同容器同一刻 javbus 仍 200，说明是出口 IP 被拉黑而不是频率），
+# 而 feed 预热每 30 分钟一轮会把它打成每天 380 次告警。冷却期不缩短取消，
+# 是让被封的源安静下来，免得把「IP 被拉黑」伪装成「不停重试」。
+SOURCE_FAILURE_THRESHOLD = 3
+SOURCE_COOLDOWN_SECONDS = 6 * 3600
 
 
 class DiscoveryService:
@@ -37,6 +47,8 @@ class DiscoveryService:
         evaluate_download_permission: Callable[..., Dict[str, Any]],
         queue_download_if_absent: Callable[[str, str, str, Optional[str]], Dict[str, Any]],
         schedule_image_cache_warmup: Callable[[Any, str], None],
+        scrape_budget: Any = None,
+        task_registry: Any = None,
     ):
         self.db = db
         self.scraper = scraper
@@ -56,6 +68,48 @@ class DiscoveryService:
         self.refreshing_keys = set()
         self.refresh_lock = threading.Lock()
         self.refresh_scheduler: Optional[Callable[[str, int, str, str], bool]] = None
+        self._source_circuits: Dict[str, Dict[str, Any]] = {}
+        self._source_circuit_lock = threading.Lock()
+        self.scrape_budget = scrape_budget or ScrapeBudget(db, logger)
+        # 任务卡要反映真实执行：没有它，`jable_hot_auto_task_loop` 这张卡
+        # 永远是「running + 空摘要」，看不出到底跑没跑（2026-11-07 实测）。
+        self.task_registry = task_registry
+
+    def is_source_cooling_down(self, source: str) -> bool:
+        """该源是否还在冷却期。"""
+        with self._source_circuit_lock:
+            state = self._source_circuits.get(source) or {}
+        return float(state.get("blocked_until") or 0) > time.time()
+
+    def record_source_failure(self, source: str) -> None:
+        """记一次失败；连续失败到阈值就熔断一段时间。"""
+        with self._source_circuit_lock:
+            state = dict(self._source_circuits.get(source) or {})
+            failures = int(state.get("failures") or 0) + 1
+            state["failures"] = failures
+            if failures >= SOURCE_FAILURE_THRESHOLD:
+                state["blocked_until"] = time.time() + SOURCE_COOLDOWN_SECONDS
+                state["failures"] = 0
+            self._source_circuits[source] = state
+        if state.get("blocked_until"):
+            self.logger.warning(
+                "Discovery source %s tripped circuit breaker for %ss after %s consecutive failures",
+                self.display_value_for_log(source),
+                SOURCE_COOLDOWN_SECONDS,
+                SOURCE_FAILURE_THRESHOLD,
+            )
+
+    def record_source_success(self, source: str) -> None:
+        with self._source_circuit_lock:
+            self._source_circuits.pop(source, None)
+
+    def get_source_circuit_state(self) -> Dict[str, Dict[str, Any]]:
+        with self._source_circuit_lock:
+            snapshot = {key: dict(value) for key, value in self._source_circuits.items()}
+        now = time.time()
+        for state in snapshot.values():
+            state["cooling_down"] = float(state.get("blocked_until") or 0) > now
+        return snapshot
 
     def get_sources(self) -> List[Dict[str, str]]:
         return [
@@ -128,8 +182,18 @@ class DiscoveryService:
         rank_type = str(raw_rank_type or "").strip().lower()
         return rank_type if rank_type in DISCOVERY_RANK_TYPES else None
 
+    def _serve_cached(self, source: str, page: int, rank_type: str) -> List[Dict]:
+        """不打站点，直接给库里缓存（过期也给，总比空列表强）。"""
+        cached = self.db.get_cache_full(self.get_cache_key(source, page, rank_type), track=False)
+        if cached and cached.get("value"):
+            return self.apply_cached_movie_title_translations(cached["value"])
+        return []
+
     def fetch_movies(self, source: str, page: int, rank_type: str, force_refresh: bool = False) -> List[Dict]:
         self.discovery_scraper.reload_config()
+        if self.is_source_cooling_down(source):
+            # 冷却期不碰站点：有缓存就继续供缓存，没缓存宁可空着，也不去打已经被封的源。
+            return self._serve_cached(source, page, rank_type)
         if source == "jable":
             # 预加载必须写入页面实际读取的翻译缓存，否则用户打开 Jable 热门时仍会现场抓取。
             movies = self.jable_scraper.get_hot_movies(
@@ -222,11 +286,16 @@ class DiscoveryService:
         force_refresh: bool = True,
     ) -> List[Dict]:
         cache_key = cache_key or self.get_cache_key(source, page, rank_type)
+        if self.is_source_cooling_down(source):
+            self.db.record_cache_event(cache_key, "refresh_skipped_circuit_open")
+            return self._serve_cached(source, page, rank_type)
         try:
             movies = self.fetch_movies(source, page, rank_type, force_refresh=force_refresh)
         except Exception:
+            self.record_source_failure(source)
             self.db.record_cache_event(cache_key, "refresh_failure")
             raise
+        self.record_source_success(source)
         if movies:
             self.db.set_cache(cache_key, movies)
             self.db.record_cache_event(cache_key, "refresh_success")
@@ -358,19 +427,22 @@ class DiscoveryService:
                     try:
                         cache_key = self.get_cache_key(source, page, rank_type)
                         cache_full = self.db.get_cache_full(cache_key)
-                        if force_refresh:
-                            movies = self.refresh_cache(source, page, rank_type, cache_key, force_refresh=True)
-                            self.schedule_image_cache_warmup(movies, f"discovery_preload_{source}")
-                        elif cache_full and cache_full.get("value"):
-                            age_seconds = self.get_cache_age_seconds(cache_full)
-                            if age_seconds < self.cache_ttl_seconds:
-                                self.schedule_image_cache_warmup(cache_full.get("value"), f"discovery_preload_cached_{source}")
-                                continue
-                            movies = self.refresh_cache(source, page, rank_type, cache_key, force_refresh=True)
-                            self.schedule_image_cache_warmup(movies, f"discovery_preload_{source}")
-                        else:
-                            movies = self.refresh_cache(source, page, rank_type, cache_key, force_refresh=False)
-                            self.schedule_image_cache_warmup(movies, f"discovery_preload_{source}")
+                        cache_fresh = bool(
+                            not force_refresh
+                            and cache_full
+                            and cache_full.get("value")
+                            and self.get_cache_age_seconds(cache_full) < self.cache_ttl_seconds
+                        )
+                        if cache_fresh:
+                            self.schedule_image_cache_warmup(cache_full.get("value"), f"discovery_preload_cached_{source}")
+                            continue
+                        if not self.scrape_budget.try_acquire(source, PURPOSE_PRELOAD):
+                            # 预热桶（默认 5 次/站/天）用完：这轮不再回源，缓存照旧供页面读取。
+                            # 另一半额度是订阅检索的，互不侵占。
+                            self.db.record_cache_event(cache_key, "refresh_skipped_daily_limit")
+                            continue
+                        movies = self.refresh_cache(source, page, rank_type, cache_key, force_refresh=force_refresh)
+                        self.schedule_image_cache_warmup(movies, f"discovery_preload_{source}")
                     except Exception as e:
                         self.logger.warning(
                             "Discovery preload failed [%s %s p%s]: %s",
@@ -385,9 +457,19 @@ class DiscoveryService:
         pages = range(1, max(1, min(int(max_pages), MAX_PRELOAD_PAGES)) + 1)
 
         for name, url in INFORMATION_FLOW_CATEGORY_TARGETS:
+            # 相对路径走 scraper 的 base_url（javbus），绝对地址按域名归源。
+            feed_source = source_for_url(url) if str(url).startswith("http") else "javbus"
             for page in pages:
                 if self.stop_event.is_set():
                     return
+                if not self.scrape_budget.try_acquire(feed_source, PURPOSE_PRELOAD):
+                    self.logger.debug(
+                        "Information flow preload stopped at [%s p%s]: daily scrape limit reached for %s",
+                        self.display_value_for_log(name),
+                        page,
+                        feed_source,
+                    )
+                    break
                 try:
                     movies = self.scraper.get_movies(
                         url,
@@ -438,13 +520,70 @@ class DiscoveryService:
         self.preload_movie_feed_cache(max_pages=pages, force_refresh=force_refresh)
         self.preload_discovery_cache(max_pages=pages, force_refresh=force_refresh)
 
+    # 热门投递的时刻去重键：记录「上次跑的是哪一天的哪个时刻」。
+    # 不做去重的话，窗口内每分钟都会触发一次投递（原实现是 22:00-22:29）。
+    JABLE_HOT_LAST_SLOT_KEY = "jable_hot_last_slot"
+    # 命中窗口：时刻到了之后 30 分钟内都可以触发（容忍循环抖动 / 短暂重启）。
+    JABLE_HOT_WINDOW = timedelta(minutes=30)
+
+    def _due_hot_slot(self, now: datetime) -> Optional[str]:
+        """返回当前该跑的投递时刻（形如 `2026-11-05 08:00`），没有则 None。
+
+        时刻列表来自设置页（默认 08:00 / 18:00），可自定义多个。
+        """
+        last_slot = str(self.db.get_config(self.JABLE_HOT_LAST_SLOT_KEY) or "")
+        for raw in scrape_schedule.time_slots("jable_hot", self.db):
+            hour, minute = raw.split(":")
+            slot_start = now.replace(hour=int(hour), minute=int(minute), second=0, microsecond=0)
+            if not (slot_start <= now < slot_start + self.JABLE_HOT_WINDOW):
+                continue
+            slot_key = f"{now.date().isoformat()} {raw}"
+            if slot_key == last_slot:
+                continue
+            return slot_key
+        return None
+
+    def _mark_jable_hot_card(
+        self,
+        *,
+        state: str,
+        summary: Optional[Dict[str, Any]] = None,
+        error: Optional[Exception] = None,
+    ) -> None:
+        """把热门投递循环的真实状态写进任务卡。
+
+        这个循环一天只跑两轮（08:00 / 18:00），绝大多数时间是「等下一个时刻」。
+        不报心跳的话 `last_heartbeat_at` 永远停在容器启动时刻，
+        `last_success_at` 永远是 null —— 看起来像卡死，其实根本没到点。
+        """
+        registry = self.task_registry
+        if registry is None:
+            return
+        payload = {"state": state}
+        payload.update(summary or {})
+        try:
+            if error is not None:
+                registry.mark_error("jable_hot_auto_task_loop", error, summary=payload)
+            elif state == "done":
+                registry.mark_success("jable_hot_auto_task_loop", summary=payload)
+            else:
+                registry.mark_heartbeat("jable_hot_auto_task_loop", summary=payload)
+        except Exception as exc:  # 任务卡写不进去不该拖垮主循环
+            self.logger.debug("写入 jable hot 任务卡失败: %s", self.safe_exception_label(exc))
+
     def jable_hot_auto_task_loop(self) -> None:
         while not self.stop_event.is_set():
             try:
                 now = datetime.now()
-                is_10pm = now.hour == 22 and now.minute < 30
-
-                if not is_10pm:
+                slot_key = self._due_hot_slot(now)
+                if not slot_key:
+                    self._mark_jable_hot_card(
+                        state="waiting",
+                        summary={
+                            "slots": scrape_schedule.time_slots("jable_hot", self.db),
+                            "last_slot": str(self.db.get_config(self.JABLE_HOT_LAST_SLOT_KEY) or ""),
+                        },
+                    )
                     self.stop_event.wait(60)
                     continue
 
@@ -454,20 +593,36 @@ class DiscoveryService:
 
                 if not enabled:
                     self.logger.debug("Jable hot auto download is disabled; skipping this check.")
+                    self._mark_jable_hot_card(
+                        state="disabled",
+                        summary={"slot": slot_key},
+                    )
                 else:
-                    self._run_jable_hot_discovery_cycle(now)
+                    cycle_summary = self._run_jable_hot_discovery_cycle(now)
+                    self.db.set_config(self.JABLE_HOT_LAST_SLOT_KEY, slot_key)
+                    self._mark_jable_hot_card(
+                        state="done",
+                        summary={"slot": slot_key, **(cycle_summary or {})},
+                    )
 
             except Exception as e:
                 self.logger.error("Jable hot discovery loop failed: %s", self.safe_exception_label(e))
+                self._mark_jable_hot_card(state="error", error=e)
 
             self.stop_event.wait(60)
 
-    def _run_jable_hot_discovery_cycle(self, now: datetime) -> None:
+    def _run_jable_hot_discovery_cycle(self, now: datetime) -> Dict[str, Any]:
         self.logger.info("[%s] Starting Jable hot discovery cycle", now.strftime("%Y-%m-%d %H:%M:%S"))
 
+        summary: Dict[str, Any] = {"fetched": 0, "lists": 0, "pending": 0, "quota_stopped": False}
         for sort_by in ["video_viewed_today", "video_viewed_week", "video_viewed_month"]:
             if self.stop_event.is_set():
                 break
+            if not self.scrape_budget.try_acquire("jable", PURPOSE_PRELOAD):
+                self.logger.info("Jable hot cycle stopped: daily scrape limit reached")
+                summary["quota_stopped"] = True
+                # 配额用完 = 整轮停手（原来这里是 return，pending 处理也不再做）
+                return summary
 
             try:
                 movies = self.jable_scraper.get_hot_movies(page=1, limit=30, sort_by=sort_by, translate=False)
@@ -475,13 +630,17 @@ class DiscoveryService:
                     continue
 
                 self.logger.info("Jable %s: fetched %s videos", sort_by, len(movies))
+                summary["lists"] += 1
+                summary["fetched"] += len(movies)
 
                 for movie in movies:
                     self.db.save_jable_hot_item(movie["id"], sort_by, movie.get("title", "Unknown"))
             except Exception as e:
                 self.logger.error("Failed to fetch Jable %s hot list: %s", sort_by, self.safe_exception_label(e))
+                summary["list_errors"] = int(summary.get("list_errors") or 0) + 1
 
         pending = self.db.get_pending_jable_hot_items(limit=20)
+        summary["pending"] = len(pending or [])
         if pending:
             self.logger.info("Processing %s pending Jable hot items", len(pending))
             current_best = self.scraper.find_best_domain()
@@ -493,6 +652,7 @@ class DiscoveryService:
                 self._process_pending_jable_hot_item(item)
 
         self.logger.info("Jable hot discovery cycle finished.")
+        return summary
 
     def _process_pending_jable_hot_item(self, item: Dict[str, Any]) -> None:
         movie_id = item["video_id"]
@@ -509,7 +669,7 @@ class DiscoveryService:
 
         self.logger.info("Searching magnet links for Jable hot item %s", movie_id)
         try:
-            detail_url = f"{self.scraper.base_url}/{movie_id}"
+            detail_url = javbus_path.build_detail_url(self.scraper.base_url, movie_id)
             detail = self.scraper.get_movie_detail(detail_url, perform_translate=False)
 
             if not detail or not detail.get("magnets"):
@@ -517,7 +677,7 @@ class DiscoveryService:
                 self.db.update_jable_hot_status(movie_id, sort_by, "failed_not_found")
                 return
 
-            best_magnet = self.scraper.select_best_magnet(detail["magnets"], preference="1080P")
+            best_magnet = self.scraper.select_alive_magnet(detail["magnets"], preference="1080P")
             if not best_magnet:
                 self.db.save_pending_download(movie_id, item["title"], source="jable", note="no_suitable_magnet")
                 self.db.update_jable_hot_status(movie_id, sort_by, "failed_no_magnet")

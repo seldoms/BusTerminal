@@ -213,8 +213,8 @@ pt_ignore_guard ──▶ 共享卷（放/摘 .ignore）
 | 文档 | 内容 |
 |---|---|
 | `docs/PRD.md` | 产品需求与功能边界 |
-| `docs/SRS.md` | 软件需求规格 |
 | `docs/UI_DESIGN_SPEC.md` | 界面设计规范 |
+| `历史归档文档` | 旧 DDD 需求规格（已归档，仅作设计意图参考） |
 | `docs/CONFIGURATION.md` | 配置项逐项参考 |
 | `docs/INSTALL.md` | 安装、部署与使用动线 |
 | `docs/API.md` | 接口清单（由 OpenAPI 自动生成） |

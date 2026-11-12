@@ -143,6 +143,16 @@ BusTerminal 本身是**调度与索引层**，自己不下载、不刮削、不�
    或 `Config values still stored in PLAINTEXT: ...`（配了但旧值没重存）。查到这两条就去重填。
 3. 密钥换了会导致旧的密文解不开（那几项需要重新填写）；`.env` 请自行备份到安全位置。
 
+> **配置建议（2026-11-12 更新）**：启用密钥后，库里已有的明文值**不会自动加密** —— 需在设置页把这些
+> 配置项重新填一遍，或用 `db.get_config()` 读出明文后 `db.set_config(key, value)` 原地写回。
+> 启动期 `plaintext_sensitive_config_keys()` 会点名仍未加密的键。密钥请自行备份到安全位置，
+> **更换密钥前务必留存**（换了旧密文就解不开）。
+>
+> ⚠️ **不能简单「删掉密钥」来回滚**：`_decrypt_config_value()` 在没有密钥时**原样返回密文字符串**，
+> 于是 `qb_config` 会从 dict 变成字符串、Jellyfin / amane / qB 的凭据全部失效。要移除密钥必须先在
+> **仍有密钥的进程里** `db.get_config()` 读出 5 个键的明文，再在密钥已移除的进程里 `db.set_config()` 写回明文。
+> 同理，别用变更前的 `busterminal.yml` 备份直接 PUT 覆盖线上栈（那份没有密钥）。
+
 ---
 
 ## 六、完整配置项参考
@@ -225,6 +235,28 @@ BusTerminal 本身是**调度与索引层**，自己不下载、不刮削、不�
 | `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | 本地大模型地址（默认回环，即同机部署） |
 | `OLLAMA_MODEL` | `qwen3:8b` | 模型名，请按你实际拉取的模型填 |
 | `OLLAMA_TIMEOUT` / `OLLAMA_BATCH_SIZE` | `300` / `12` | 单次请求超时与批量条数 |
+| `TRANSLATION_BACKFILL_ENABLED` | `false` | **存量历史标题回填**总开关；2026-11-12 起代码兜底默认与各编排模板**一律 `false`**，见下 |
+| `TRANSLATION_BACKFILL_BATCH` / `TRANSLATION_BACKFILL_INTERVAL_SECONDS` | `8` / `0` | 回填每轮喂料条数与间隔（0 = 连续喂）；回填关闭时不生效 |
+| `TRANSLATION_PROGRESS_SNAPSHOT_SECONDS` | `1800` | 设置页「翻译进度」快照间隔；只读统计，不触发翻译 |
+
+#### 翻译策略（2026-11-12 用户拍板）
+
+**只保证「页面上新展示的内容」+「入库影片信息」是中文；约 87 万条历史积压不再追翻。**
+
+`TRANSLATION_BACKFILL_ENABLED` 关掉的**只有** `maintenance_service.translation_backfill_loop` 这一个
+「把老片从库里捞出来喂进队列」的线程。增量翻译是另一条独立路径，**完全不受这个开关影响**：
+
+- 列表页 `/api/movies`、`/api/search`、`/api/jable/hot` 等走 `scraper.filter_processed_movies()`，
+  遇到展示标题仍含假名且无译文的片子就 `queue_title_translations(..., priority=True)` 插到队首；
+- 详情页没译文时同样插队；队列工作线程按批翻译后 `db.save_translation()` +
+  `db.update_movie_titles_by_translation()` 落库；
+- Jellyfin 入库中文化由 `jellyfin_curation_service._pick_translation()` 读
+  `movies.title_cn` > `translations[original_title]`。
+
+⚠️ 别把 `scrape_schedule.py`（抓取频率唯一入口）和这个开关混为一谈：回填是**存量翻译任务**，
+不属于抓取节奏。要恢复追翻把该值改回 `true` 并重启服务即可，游标会续跑。
+停回填后 `/api/translation/status` 里的 `pending_total` / `eta_days` 会长期停在同一数字 —— 那是
+「我们主动决定不翻」的存量，不是卡住；进度快照（`1800s` 扫一次全表）仍在跑但不再有意义。
 
 ### 6.8 媒体文件与自动化
 

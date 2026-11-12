@@ -65,6 +65,19 @@ class TaskRegistry:
             task["thread_id"] = current.ident
             task["restart_count"] = int(task.get("restart_count") or 0) + 1
 
+    def mark_heartbeat(self, name: str, *, summary: Optional[Dict[str, Any]] = None) -> None:
+        """只报「我还活着」，不动成功/错误状态。
+
+        给「每小时唤醒、命中条件才干活」这类循环用：它们可能一整天都不满足触发条件，
+        没有心跳的话 `last_heartbeat_at` 会永远停在容器启动时刻，看起来像卡死
+        （2026-11-04 实测 `auto_delete_watched_daily` 就是这样）。
+        """
+        with self._lock:
+            task = self._tasks.setdefault(name, {"name": name})
+            task["last_heartbeat_at"] = self._now()
+            if summary is not None:
+                task["last_summary"] = summary
+
     def mark_success(self, name: str, *, stopped: bool = False, summary: Optional[Dict[str, Any]] = None) -> None:
         with self._lock:
             task = self._tasks.setdefault(name, {"name": name})
@@ -138,8 +151,16 @@ class TaskRegistry:
 
     @staticmethod
     def _safe_error_message(exc: Exception) -> str:
-        message = str(exc or "").strip()
-        if re.fullmatch(r"[A-Za-z][A-Za-z0-9_.:-]{0,119}", message):
+        # 例外消息里可能带路径/URL/凭据，所以只放行「ASCII 字母数字 + 空格与几个标点」。
+        # 刻意**不放行 `/` 和 `:`** —— 否则 `http://host/...` 这种串会被整个带出去。
+        # 但正则也不能只认单 token：`psycopg2.pool.PoolError` 的消息是
+        # `connection pool exhausted`（带空格），旧写法不匹配 → 整个消息退回成类名，
+        # 于是任务卡片上只剩 `type=PoolError, message=PoolError`，看不出是耗尽还是已关闭
+        # （2026-11-04 实测踩中）。
+        message = " ".join(str(exc or "").split())
+        if message and message != "None" and re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9 _.,'()\[\]-]{0,159}", message
+        ):
             return message
         return exc.__class__.__name__
 

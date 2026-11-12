@@ -11,8 +11,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from database import is_bad_translation_text  # noqa: E402
 from translation_guard import (  # noqa: E402
     TitleGuard,
+    detect_refusal,
     is_low_quality,
     looks_untranslated,
+    missing_codes,
     too_similar,
 )
 from ollama_translator import OllamaTranslator  # noqa: E402
@@ -210,3 +212,133 @@ def test_malformed_control_tokens_are_stripped():
     # 正常标题不能被误伤
     assert strip_translation_control_tokens("巨乳新人教师") == "巨乳新人教师"
     assert strip_translation_control_tokens("A|B 特别篇") == "A|B 特别篇"
+
+# ---------- 拒答话术（KI-054） ----------
+
+def test_real_refusal_phrases_are_rejected():
+    """2026-10-29 生产库里实际躺着的 74 条，逐条取原样句式。"""
+    cases = [
+        "该内容包含色情低俗信息，我无法为你提供翻译服务。",
+        "色情低俗内容，无法提供翻译服务。",
+        "抱歉，我无法提供此类内容翻译。",
+        "很抱歉，我不能帮你翻译这类内容。",
+        "我无法为你提供相关帮助。",
+        "性处理相关内容违反内容规范，我无法为你提供翻译服务。",
+        "作为一个AI语言模型，我无法处理此类请求。",
+    ]
+    for text in cases:
+        assert detect_refusal(text) is True, text
+        assert is_low_quality("美人妻 SSIS-836 完全版", text) == "refusal", text
+
+
+def test_polite_refusal_with_request_wording_is_rejected():
+    """2026-11-05 在 Jellyfin 名称里逮到的漏网句式：末词是「请求」而不是「翻译/服务」。"""
+    cases = [
+        "我很抱歉，但我无法协助完成此请求。",
+        "ROYD-305 我很抱歉，但我无法协助完成此请求。",
+        "抱歉，我无法处理这个请求。",
+    ]
+    for text in cases:
+        assert detect_refusal(text) is True, text
+
+
+def test_normal_titles_are_not_mistaken_for_refusal():
+    """A/B 两类词都在、但不是模板开头 —— 一条都不许误杀。
+
+    这是拒答判据最容易翻车的地方：单查「抱歉」会误命中 168 条正常译文。
+    """
+    cases = [
+        "无法拒绝的服务",
+        "我用无法解释的方式帮助你",
+        "妻子无法满足，于是向邻居提供了帮助",
+        "对不起，我爱你 视觉原声带DVD",
+        "抱歉射太多了…给天真的身体带来的强烈快感",
+        "我无法忘记那个强奸我的我讨厌的男人",
+        "无法识别的男人",
+    ]
+    for text in cases:
+        assert detect_refusal(text) is False, text
+        assert is_low_quality("適当なタイトル", text) is None, text
+
+
+def test_long_text_is_not_judged_as_refusal():
+    """原文本身就长时，正文里偶然出现「无法提供」不该整条作废。"""
+    long_text = "这是一部关于" + "某位女演员" * 12 + "的故事，她无法提供任何帮助给自己。"
+    assert detect_refusal(long_text) is False
+
+
+# ---------- 番号完整性（KI-055） ----------
+
+def test_missing_codes_detects_dropped_and_rewritten_code():
+    # 实测：Abliterated 整条漏掉；hunyuan 把 MIMK-284 粘成 MIMK-2026-06-12
+    assert missing_codes("MIMK-284 紫阳家的金丝雀", "紫阳家的金丝雀 高清字幕 2026-06-12") == ["MIMK-284"]
+    assert missing_codes("MIMK-284 紫阳家的金丝雀", "紫阳家的金丝雀 MIMK-2026-06-12") == ["MIMK-284"]
+    assert is_low_quality("MIMK-284 紫阳家的金丝雀", "紫阳家的金丝雀 高清字幕") == "code_lost:MIMK-284"
+
+
+def test_code_kept_passes_and_dash_variants_tolerated():
+    assert missing_codes("绝对COS HODV-20544", "绝对COS HODV–20544") == []
+    assert missing_codes("绝对COS HODV-20544", "绝对COS HODV 20544") == []
+    assert missing_codes("绝对COS HODV-20544", "绝对COS hodv-20544") == []
+    assert missing_codes("常盤さやか XS-2264 香水", "常盤さやか 香水 XS-2264") == []
+    assert is_low_quality("絶対COS HODV-20544 波多野結衣", "绝对COS 波多野结衣 HODV-20544") is None
+
+
+def test_no_code_in_source_skips_the_check():
+    assert missing_codes("巨乳人妻の誘惑", "巨乳人妻的诱惑") == []
+    assert is_low_quality("巨乳人妻の誘惑", "巨乳人妻的诱惑") is None
+
+
+def test_ai_remaster_titles_are_not_refusal():
+    """2026-11-04 生产抽查发现的误杀：库里有 431 条「AI重制版…」的正常译文。
+
+    原先的模板 `^(作为)?(一个)?(AI|...)` 把开头的可选项全放开，等于匹配「以 AI 开头」，
+    一旦接进读取兜底（is_bad_translation_text），这些标题会被整片回落到日文原文。
+    """
+    for text in [
+        "AI重制版 波多野结衣 高清",
+        "AI写真集 妄想健身美女总篇 09＋10",
+        "AICWM-021【AI重制版】当她换上竞技泳衣时",
+        "人工智能。 ATLAS INTEGRAL AVD-100",
+    ]:
+        assert detect_refusal(text) is False, text
+    # 真正的元评论才拦
+    assert detect_refusal("作为一个AI语言模型，我无法处理此类请求。") is True
+
+
+def test_policy_stop_title_is_not_refusal():
+    """作品标题本身就在说「违反政策」，不能当拒答。"""
+    assert detect_refusal("【因违反政策立即停止配信！】 因公开排泄而兴奋的母亲 高清ODV-557") is False
+    assert detect_refusal("这部作品包含大量低俗色情内容，违反内容安全规范，我无法为你提供翻译服务。") is True
+
+def test_refusal_variants_found_in_production_stock():
+    """2026-11-04 清理时漏网的 11 条，逐条取自生产库原样。"""
+    cases = [
+        "无法对性交易或色情内容进行翻译",
+        "无法识别该内容，请提供有效的影视标题。",
+        "BIJN-色情低俗内容，无法提供翻译服务。",
+        "DSOD-0色情低俗内容，我无法为你提供翻译服务。",
+        "抱歉，我暂时无法提供此类服务。|<im_end|>",
+        "IPZZ-91情色内容限制，无法提供翻译服务。",
+        "我很抱歉，但我无法协助翻译此类内容。",
+        "您的请求涉及色情低俗内容，我无法为您提供相关帮助。",
+        "私无法提供此类内容翻译。",
+        "我实在无法翻译此类含有色情低俗内容的文本。",
+    ]
+    for text in cases:
+        assert detect_refusal(text) is True, text
+
+
+def test_normal_titles_with_service_words_survive():
+    """放宽带了「不锚句首」之后，这几条正常标题是回归重点。"""
+    cases = [
+        "无法拒绝发情的顾客，提供隐藏菜单性服务",
+        "【文化祭摊位】高挑J●被迫穿紧身高叉袜 性感美腿招揽顾客！无法拒绝发情客人 提供隐藏菜单性服务",
+        "痴〇蚁地狱 传染⇒增殖的集体兽欲！在绝对无法逃脱的男人们领地中，向汗臭的劳动者提供‘生〇慰劳’",
+        "用内裤诱惑勃起阴茎进行贴身油压按摩的男体按摩店 无法抑制性欲的按摩师会偷偷提供",
+        "很抱歉，我无法忘记那个男人",
+        "无法翻译的爱",
+        "妻子无法满足，于是向邻居提供了帮助",
+    ]
+    for text in cases:
+        assert detect_refusal(text) is False, text

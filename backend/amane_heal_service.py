@@ -14,8 +14,13 @@ from amane_client import AmaneError
 # 每条自愈之间的间隔：串行 + 小停顿，避免打爆 amane 与其背后的刮削源。
 BATCH_INTERVAL_SECONDS = 1.0
 
-# 认为"需要自愈"的 media_file 状态：已登记但没刮完。
-HEALABLE_MEDIA_STATUSES = ("pending", "failed")
+# 认为"需要自愈"的 media_file 状态。
+#
+# ⚠️ 必须包含 scraped：刮削成功但没整理的条目正是最该被救的一类 —— 素材已经在
+# _incoming 里、元数据也齐了，只差一次 organize。早期只列 pending/failed，导致
+# 这类条目被 _pick_media 直接过滤掉，自愈每小时跑一次、连跑 40 小时报了 390 次
+# media_not_found，一次都没真正救过（2026-10-27 事故）。
+HEALABLE_MEDIA_STATUSES = ("pending", "failed", "scraped")
 
 # organize_status 里代表"卡住"的取值，检测时逐个查询再合并去重。
 STUCK_ORGANIZE_STATUSES = ("pending", "failed", "not_found")
@@ -164,18 +169,21 @@ class AmaneHealService:
                     self.display_value_for_log(movie_id), self.safe_exception_label(exc),
                 )
 
-        # ③ 刮削
-        try:
-            scrape_task = client.submit_scrape(number=number, media_id=media_id)
-            scrape_task = client.wait_for_task(scrape_task.get("id"))
-        except AmaneError as exc:
-            return self._fail(result, title, "scrape", exc)
-        stages.append(self._stage("scrape", scrape_task))
-        if self._task_failed(scrape_task):
-            return self._fail(
-                result, title, "scrape",
-                AmaneError(str(scrape_task.get("error") or "scrape_failed")),
-            )
+        # ③ 刮削：已经刮过的跳过，别对同一部片重复打源站
+        if str(media.get("status") or "").lower() != "scraped":
+            try:
+                scrape_task = client.submit_scrape(number=number, media_id=media_id)
+                scrape_task = client.wait_for_task(scrape_task.get("id"))
+            except AmaneError as exc:
+                return self._fail(result, title, "scrape", exc)
+            stages.append(self._stage("scrape", scrape_task))
+            if self._task_failed(scrape_task):
+                return self._fail(
+                    result, title, "scrape",
+                    AmaneError(str(scrape_task.get("error") or "scrape_failed")),
+                )
+        else:
+            stages.append({"stage": "scrape", "status": "skipped_already_scraped"})
 
         # ④ 整理（amane 未开放自动整理，需显式触发）
         organized = False
@@ -304,11 +312,25 @@ class AmaneHealService:
 
     @staticmethod
     def _pick_media(items: List[Dict[str, Any]], number: str) -> Optional[Dict[str, Any]]:
-        wanted = str(number or "").upper()
-        for item in items or []:
-            if str(item.get("status") or "").lower() not in HEALABLE_MEDIA_STATUSES:
-                continue
-            if wanted and wanted in str(item.get("path") or "").upper():
+        """从搜索结果里挑出该番号对应的滞留条目。
+
+        匹配放宽到「number 字段相等 或 路径里含番号」，两头都要认：
+        只认路径会漏掉 amane 猜歪号的行（`4k2.mestart-646.mp4` → MESTART-646），
+        只认 number 又会漏掉番号还没补、只在路径里有的行。
+        """
+        wanted = str(number or "").strip().upper()
+        if not wanted:
+            return None
+        candidates = [
+            item for item in items or []
+            if str(item.get("status") or "").lower() in HEALABLE_MEDIA_STATUSES
+        ]
+        # 优先精确命中 number 字段的：说明这条的号已经补对了
+        for item in candidates:
+            if str(item.get("number") or "").strip().upper() == wanted:
+                return item
+        for item in candidates:
+            if wanted in str(item.get("path") or "").upper():
                 return item
         return None
 

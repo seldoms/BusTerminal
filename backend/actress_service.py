@@ -2,6 +2,14 @@ import time
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, Optional
 
+import scrape_schedule
+
+# 元数据「更新周期」是**同一条女优的复查冷却**，不是循环 sleep 时长。
+# 缺资料的积压要靠后台小批次持续消化，真等 7 天才跑一轮的话，
+# 10 万条缺口按每轮 10 条要 200 年。所以循环本身按小步长轮询，
+# 候选筛选时用配置的周期做冷却。
+METADATA_POLL_MAX_SECONDS = 1800
+
 
 class ActressService:
     def __init__(
@@ -226,17 +234,66 @@ class ActressService:
 
         return queued
 
+    def _metadata_search_candidates(self, actress: Dict[str, Any]) -> list:
+        """给出查 netflav 时可用的女优名候选，**原名优先**。
+
+        库里 actresses.name 存的是**中文译名**（`天使萌`），而 netflav 站上
+        索引的是**日文原名**（`天使もえ`）—— 2026-11-07 生产实测按中文译名
+        搜 20 条命中 0 条，换日文原名命中 9 条。
+
+        候选顺序：
+          1. 日文原名（translations 表按译文反查）—— 最准，站上就是这个写法
+          2. 库里已存的别名（aliases，含 name_en）
+          3. 英文名（name_en）
+          4. 中文译名本身 —— 兜底，命中率最低
+        """
+        name = str((actress or {}).get("name") or "").strip()
+        candidates: list = []
+
+        def push(value: Any) -> None:
+            text = str(value or "").strip()
+            if text and text not in candidates:
+                candidates.append(text)
+
+        # 1) 日文原名：库里存的是译名，译名的原文才是站上的写法
+        if name and hasattr(self.db, "get_translation_originals"):
+            try:
+                for original in self.db.get_translation_originals(name, limit=3):
+                    push(original)
+            except Exception as exc:
+                self.logger.debug(
+                    "反查女优原名失败 [%s]: %s",
+                    self.display_value_for_log(name),
+                    self.safe_exception_label(exc),
+                )
+
+        # 2) 已存别名
+        aliases = str((actress or {}).get("aliases") or "")
+        for alias in aliases.split(","):
+            push(alias)
+
+        # 3) 英文名
+        push((actress or {}).get("name_en"))
+
+        # 4) 中文译名兜底
+        push(name)
+        return candidates
+
     def metadata_backfill_loop(self) -> None:
         while not self.stop_event.is_set():
             try:
+                # 设置页可改（默认 7 天）：同一条女优的资料多久后才重新抓。
+                retry_seconds = scrape_schedule.interval_seconds("actress_metadata")
                 candidates = self.db.get_actresses_needing_metadata(
                     limit=self.metadata_batch_size,
-                    retry_after_seconds=self.metadata_retry_seconds,
+                    retry_after_seconds=retry_seconds,
                     max_attempts=self.metadata_max_attempts,
                 )
                 attempted_count = 0
                 success_count = 0
                 failed_count = 0
+                not_found_count = 0
+                source_error_count = 0
                 for actress in candidates:
                     if self.stop_event.is_set():
                         return
@@ -247,12 +304,20 @@ class ActressService:
                     error_label = None
                     attempted_count += 1
                     try:
-                        updated = self.netflav_scraper.backfill_actress_by_name(name, target_id=actress_id, save_movies=False)
+                        search_candidates = self._metadata_search_candidates(actress)
+                        updated = self.netflav_scraper.backfill_actress_by_candidates(
+                            search_candidates,
+                            target_id=actress_id,
+                            save_movies=False,
+                        )
                         success = self.has_basic_metadata(updated)
                         if not success:
                             error_label = "incomplete_metadata"
                     except Exception as e:
                         error_label = self.safe_exception_label(e)
+                        # 抓取本身抛异常 = **源不可用**（反爬 / 断网 / 域名全挂）。
+                        # 「站上查无此人」不算源不可用，见下面的 not_found_count。
+                        source_error_count += 1
                         if int(actress.get("metadata_attempt_count") or 0) == 0:
                             self.logger.warning(
                                 "Actress metadata source unavailable [%s]: %s",
@@ -268,6 +333,11 @@ class ActressService:
 
                     if success:
                         success_count += 1
+                    elif error_label == "incomplete_metadata":
+                        # 站上确实没这个人（或资料不全）—— 这是**常态**，不是故障。
+                        # 2026-11-07 实测：候选里相当一部分演员 netflav 根本没收录，
+                        # 硬算成失败会让任务卡长期挂红、看不出真问题。
+                        not_found_count += 1
                     else:
                         failed_count += 1
 
@@ -278,8 +348,10 @@ class ActressService:
                         "attempted": attempted_count,
                         "completed": success_count,
                         "failed": failed_count,
+                        "not_found": not_found_count,
                     }
-                    if failed_count:
+                    # 只有**源真的不可用**才标错误；「站上查无此人」是正常结果。
+                    if source_error_count:
                         self.task_registry.mark_error(
                             "actress_metadata_backfill_loop",
                             RuntimeError("actress_metadata_sources_unavailable"),
@@ -294,4 +366,9 @@ class ActressService:
                 self.logger.error("Actress metadata backfill loop failed: %s", self.safe_exception_label(e))
                 self.task_registry.mark_error("actress_metadata_backfill_loop", e)
 
-            self.stop_event.wait(self.metadata_retry_seconds)
+            # 循环步长按「小批次持续消化」走，不跟着 7 天冷却一起停摆。
+            poll_seconds = min(
+                scrape_schedule.interval_seconds("actress_metadata"),
+                METADATA_POLL_MAX_SECONDS,
+            )
+            self.stop_event.wait(max(poll_seconds, 60))

@@ -3,6 +3,7 @@ from threading import Event
 from types import SimpleNamespace
 
 from discovery_service import DiscoveryService
+from scrape_budget import ScrapeBudget
 
 
 def test_feed_preload_translates_cached_titles(monkeypatch):
@@ -23,6 +24,10 @@ def test_feed_preload_translates_cached_titles(monkeypatch):
     service.display_value_for_log = str
     service.safe_exception_label = lambda error: type(error).__name__
     service.schedule_image_cache_warmup = lambda *args: None
+    service.scrape_budget = ScrapeBudget(
+        SimpleNamespace(get_config=lambda key: None, set_config=lambda key, value: None),
+        logging.getLogger(__name__),
+    )
     monkeypatch.setattr("discovery_service.time.sleep", lambda _: None)
 
     service.preload_movie_feed_cache(max_pages=1)

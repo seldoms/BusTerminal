@@ -447,6 +447,24 @@ class QBService:
 
         try:
             return {"success": True, "data": self.build_dashboard(session, base_url)}
+        except self.qb_api.QBSessionExpired:
+            # 面板以前会把 403 渲染成「一片 0」，看着像 qB 空了。这里重建会话并明确降级。
+            self.invalidate_session()
+            self._last_unavailable_reason = "qb_session_expired"
+            return {
+                "success": True,
+                "degraded": True,
+                "message": "qb_session_expired",
+                "data": {
+                    "connected": False,
+                    "degraded": True,
+                    "configured": bool(base_url),
+                    "disk": {},
+                    "transfer": {},
+                    "queue_stats": self.db.get_queue_stats(),
+                    "torrent_count": 0,
+                },
+            }
         except (requests.exceptions.RequestException, ConnectionError, TimeoutError, OSError) as e:
             self.logger.warning("QB get_dashboard connection failed: %s", e)
             self.record_failure()
@@ -478,7 +496,16 @@ class QBService:
             return self.unavailable_response()
 
         try:
-            torrents = self.qb_api.get_torrents(session, base_url, normalized_category)
+            try:
+                torrents = self.qb_api.get_torrents(session, base_url, normalized_category)
+            except self.qb_api.QBSessionExpired:
+                # qB 重启会让旧 SID 全部作废。这里重建一次再试，绝不能把
+                # 「会话过期」当成「qB 里没有种子」返回一个空列表。
+                self.invalidate_session()
+                session, base_url = self.session()
+                if not session:
+                    return self.unavailable_response()
+                torrents = self.qb_api.get_torrents(session, base_url, normalized_category)
             if not isinstance(torrents, list):
                 return {"success": True, "data": [], "total": 0, "limit": limit, "offset": offset}
 

@@ -344,3 +344,70 @@ def test_jellyfin_refresh_error_does_not_fail_heal():
 
     assert report["healed"] == 1
     assert report["jellyfin_refresh"] is False
+
+
+# ---------- scraped 状态（刮完了但没整理）----------
+
+def test_heal_one_accepts_scraped_media_and_skips_rescrape():
+    """刮削成功但没整理的条目必须能被自愈救回。
+
+    生产事故（2026-10-27）：这类条目状态是 scraped，而 HEALABLE_MEDIA_STATUSES
+    只有 pending/failed，_pick_media 直接把它们过滤掉，自愈连跑 40 小时报了
+    390 次 media_not_found，一次都没真正救过 —— 文件就躺在 /hp/_incoming 里。
+    """
+    db = _FakeDb()
+    scraped = {
+        "id": 1275,
+        "number": "SNOS-339",
+        "status": "scraped",
+        "path": "/hp/_incoming/SNOS-339-FHD/SNOS-339-FHD.mp4",
+    }
+    client = _FakeClient(media=[scraped])
+
+    result = _build(db, client).heal_one("SNOS-339", title="t")
+
+    assert result["healed"] is True
+    assert result["media_file_id"] == 1275
+    # 已经刮过了，不能再打一次源站
+    assert not any(c[0] == "submit_scrape" for c in client.calls)
+    assert any(c[0] == "submit_organize" for c in client.calls)
+    assert result["stages"][0] == {
+        "stage": "scrape", "status": "skipped_already_scraped"
+    }
+    assert db.events[-1]["organize_status"] == "completed"
+
+
+def test_heal_one_picks_media_by_number_field_when_path_lacks_code():
+    """路径里没有番号时要靠 number 字段命中。
+
+    amane 扫 _incoming 时按原始文件名猜号，站点水印会把番号写歪
+    （`489155.com@SNOS-347.mp4`），只认路径就会漏掉已经补对号的行。
+    """
+    db = _FakeDb()
+    media = {
+        "id": 1259,
+        "number": "SNOS-347",
+        "status": "scraped",
+        "path": "/hp/_incoming/489155.com@SNOS-347.mp4",
+    }
+    client = _FakeClient(media=[media])
+
+    result = _build(db, client).heal_one("SNOS-347", title="t")
+
+    assert result["healed"] is True
+    assert result["media_file_id"] == 1259
+
+
+def test_heal_one_still_prefers_number_match_over_path_match():
+    """同番号多条时，优先选 number 字段已经对上的那条。"""
+    db = _FakeDb()
+    client = _FakeClient(media=[
+        {"id": 1, "number": None, "status": "scraped",
+         "path": "/hp/_incoming/SNOS-339-FHD/SNOS-339-FHD.mp4"},
+        {"id": 2, "number": "SNOS-339", "status": "scraped",
+         "path": "/hp/_incoming/SNOS-339-FHD/other.mp4"},
+    ])
+
+    result = _build(db, client).heal_one("SNOS-339", title="t")
+
+    assert result["media_file_id"] == 2

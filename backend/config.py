@@ -67,8 +67,13 @@ def get_log_level() -> int:
     return levels.get(LOG_LEVEL, logging.INFO)
 
 # ========== 后台任务配置 ==========
-# 订阅自动检查间隔（秒）
-SUBSCRIPTION_CHECK_INTERVAL: int = get_int_env('SUBSCRIPTION_CHECK_INTERVAL', 4 * 3600, minimum=1)
+# 注意：抓取/刷新类频次的**运行时唯一入口是 `scrape_schedule.py`**（设置页「抓取节奏」）。
+# 下面这些 INTERVAL 常量只是历史遗留 + 文档参考，**不再参与任何调度**：
+# 2026-11-05 上线时发现 compose 里的旧 env（FEED_PRELOAD_REFRESH_SECONDS=10800 等）
+# 会把设置页显示的值和实际跑的值拆成两套，所以频率只认 config 表。
+#
+# 订阅自动检查间隔（秒），默认 12 小时一轮
+SUBSCRIPTION_CHECK_INTERVAL: int = get_int_env('SUBSCRIPTION_CHECK_INTERVAL', 12 * 3600, minimum=1)
 
 # 智能过滤任务间隔（秒）
 GROOM_TASK_INTERVAL: int = get_int_env('GROOM_TASK_INTERVAL', 60, minimum=1)
@@ -118,18 +123,34 @@ CACHE_SIZE_LIMIT_GB: float = get_float_env('CACHE_SIZE_LIMIT_GB', 10.0, minimum=
 
 # Cache policy. List/detail freshness is separate from the disk capacity limit.
 INFORMATION_FLOW_PRELOAD_PAGES: int = min(
-    get_int_env('BUS_TERMINAL_INFORMATION_FLOW_PRELOAD_PAGES', 3, minimum=1), 30
+    # 每站每日抓取配额只有 10 次（scrape_budget.py）。首页/字幕/高清三个分类
+    # 各预热 3 页就是 9 次，启动即把当天额度烧光、剩下 24 小时只能读缓存；
+    # 默认 1 页，翻到第 2 页由用户点击按需抓取（不计入自动配额）。
+    get_int_env('BUS_TERMINAL_INFORMATION_FLOW_PRELOAD_PAGES', 1, minimum=1), 30
 )
 # 首页/字幕/高清/发现 feed 的周期性预热（只写本地缓存，不触发下载/Jellyfin 写入等副作用）
 FEED_PRELOAD_REFRESH_ENABLED: bool = os.getenv(
     'FEED_PRELOAD_REFRESH_ENABLED', 'true',
 ).strip().lower() not in ('0', 'false', 'no', 'off')
 FEED_PRELOAD_REFRESH_SECONDS: int = min(
-    get_int_env('FEED_PRELOAD_REFRESH_SECONDS', 1800, minimum=60), 24 * 3600
+    # 用户口径：首页 / 榜单 4 小时一次就够（设置页可改，这里是出厂默认）。
+    get_int_env('FEED_PRELOAD_REFRESH_SECONDS', 4 * 3600, minimum=60), 7 * 24 * 3600
 )
 # 翻译进度快照间隔（秒）。全量去重统计要扫 1.4M 行、约 20~30 秒，只能后台算好给页面读
 TRANSLATION_PROGRESS_SNAPSHOT_SECONDS: int = min(
     get_int_env('TRANSLATION_PROGRESS_SNAPSHOT_SECONDS', 1800, minimum=60), 24 * 3600
+)
+# 外挂字幕自动补抓：轮询间隔与每轮上限。
+# 新片入库后没人会手动点「补抓字幕」，必须有个自动循环兜底。
+# 用户口径：3 分钟内随机一次（设置页可改），所以出厂值是 180 秒、且循环里取
+# 0~该值的随机数，不做「整分钟」这种可识别节奏。
+SUBTITLE_BACKFILL_INTERVAL_SECONDS: int = min(
+    get_int_env('SUBTITLE_BACKFILL_INTERVAL_SECONDS', 180, minimum=0), 24 * 3600
+)
+# 每轮只抓 1 部：节奏改成「0~3 分钟随机一次」后，若每轮仍拍 4 部，
+# 一天就是 3840 次 subtitlecat 请求 —— 用户要的是「每 3 分钟抓一次」，不是把它打爆。
+SUBTITLE_BACKFILL_BATCH: int = min(
+    get_int_env('SUBTITLE_BACKFILL_BATCH', 1, minimum=1), 20
 )
 MOVIE_DETAIL_CACHE_TTL_SECONDS: int = min(
     get_int_env('BUS_TERMINAL_MOVIE_DETAIL_CACHE_TTL', 6 * 3600, minimum=60),
@@ -149,7 +170,9 @@ DATABASE_URL: str = os.getenv('DATABASE_URL') or DEFAULT_DATABASE_URL
 DATABASE_POOL_MAX_CONNECTIONS: int = min(
     get_int_env(
         'BUS_TERMINAL_DATABASE_POOL_MAX_CONNECTIONS',
-        10,
+        # 默认 10 时，容器重建瞬间 20 多个后台任务同时抢连接会打满（PG 侧 max_connections=100）。
+        # 调到 20 留出余量；真正防瞬时风暴靠 database._acquire_pooled_connection 的排队等待。
+        20,
         minimum=5,
     ),
     50,
@@ -241,6 +264,18 @@ JUNK_DELETE_TORRENTS: bool = os.getenv(
     'JUNK_DELETE_TORRENTS', 'true',
 ).strip().lower() not in ('0', 'false', 'no', 'off')
 
+# ========== 半夜静默模式（暂停 qB 上传/下载） ==========
+# 策略本体在 qb_quiet_hours.py，开关与时间段是运行时配置（config 表 qb_quiet_hours）。
+# 这里只控制「巡检循环本身要不要起」——关掉它等于彻底不执行静默规则，
+# 已经在静默中的种子不会被自动恢复，所以默认开启。
+QB_QUIET_HOURS_TICK_ENABLED: bool = os.getenv(
+    'QB_QUIET_HOURS_TICK_ENABLED', 'true',
+).strip().lower() not in ('0', 'false', 'no', 'off')
+# 巡检间隔（秒）：到点误差 = 这个值，30 秒足够；别低于 10 秒，否则会刷 qB 接口
+QB_QUIET_HOURS_TICK_SECONDS: int = min(
+    get_int_env('QB_QUIET_HOURS_TICK_SECONDS', 30, minimum=10), 3600
+)
+
 # ========== 服务与目录配置 ==========
 DELIVERY_FOLDER: str = os.getenv('DELIVERY_FOLDER', '/downloads/staging')
 
@@ -305,8 +340,9 @@ OLLAMA_BASE_URL: str = os.getenv('OLLAMA_BASE_URL', 'http://127.0.0.1:11434')
 OLLAMA_MODEL: str = os.getenv('OLLAMA_MODEL', 'qwen3.8:27b')
 # 单次调用超时（秒）。Ollama 并发为 1，排队时更久，别设太短
 OLLAMA_TIMEOUT: int = min(get_int_env('OLLAMA_TIMEOUT', 300, minimum=10), 900)
-# 每次请求翻译多少条标题：实测 12 条约 27 秒，再大单次等待过长
-OLLAMA_BATCH_SIZE: int = min(get_int_env('OLLAMA_BATCH_SIZE', 12, minimum=1), 30)
+# 每次请求翻译多少条标题：用户 2026-11-09 定的口径是「组成 json，一次发 10 条」。
+# 实测 10 条 JSON 批量比逐条快一个量级（请求数 ÷10，模型一次看更多上下文也更准）。
+OLLAMA_BATCH_SIZE: int = min(get_int_env('OLLAMA_BATCH_SIZE', 10, minimum=1), 30)
 
 # 标题翻译的质量保障（2026-11-11）：
 # 实测两个模型都守不住「艺人姓名保留日文假名」这条口径（qwen3.8:27b 把 `水野アコ` 译成
@@ -331,7 +367,8 @@ GFRIENDS_AVATAR_SYNC_ENABLED: bool = os.getenv(
     'GFRIENDS_AVATAR_SYNC_ENABLED', 'false',
 ).strip().lower() in ('1', 'true', 'yes', 'on')
 GFRIENDS_AVATAR_SYNC_INTERVAL_SECONDS: int = min(
-    get_int_env('GFRIENDS_AVATAR_SYNC_INTERVAL_SECONDS', 1800, minimum=300), 86400
+    # 用户口径：头像 7 天一次（设置页可改，这里是出厂默认）。
+    get_int_env('GFRIENDS_AVATAR_SYNC_INTERVAL_SECONDS', 7 * 86400, minimum=300), 90 * 86400
 )
 GFRIENDS_AVATAR_SYNC_BATCH: int = min(
     get_int_env('GFRIENDS_AVATAR_SYNC_BATCH', 300, minimum=10), 5000
@@ -342,9 +379,15 @@ GFRIENDS_AVATAR_SYNC_SCAN_FACTOR: int = min(
     get_int_env('GFRIENDS_AVATAR_SYNC_SCAN_FACTOR', 12, minimum=1), 50
 )
 
-# 历史标题翻译回填：后台排队慢慢翻完积压（仅本地大模型启用时生效）
+# 历史标题翻译回填：后台排队慢慢翻完积压（仅本地大模型启用时生效）。
+# 2026-11-12 起默认关闭：只保证「页面新展示的内容」+「入库影片信息」是中文，
+# 存量积压不再追翻。
+# ⚠️ 这个开关只停 maintenance_service.translation_backfill_loop 的「存量喂料」；增量翻译
+# （列表页 filter_processed_movies / 详情页 → queue_title_translations(priority=True) → 落库）
+# 是另一条路径，完全不受影响。见 docs/CONFIGURATION.md §6.7。
+# 确实要追翻存量时显式把环境变量置 true，游标 translation_backfill_cursor 会续跑。
 TRANSLATION_BACKFILL_ENABLED: bool = os.getenv(
-    'TRANSLATION_BACKFILL_ENABLED', 'true',
+    'TRANSLATION_BACKFILL_ENABLED', 'false',
 ).strip().lower() not in ('0', 'false', 'no', 'off')
 # 每轮往队列里放几个片子。注意：真正发请求的是队列工作线程，永远"一个片子一个请求"，
 # 这里只是喂料批量，越大数据库查询越少、喂得越快

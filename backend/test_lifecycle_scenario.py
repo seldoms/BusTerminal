@@ -3332,6 +3332,24 @@ def test_spa_fallback_does_not_serve_files_outside_static(main_module):
     assert b"from fastapi import" not in response.content
 
 
+def test_misplaced_health_probe_does_not_return_spa_shell(main_module):
+    """探针写错路径时不能落 SPA —— `/health/live` 返回 200 + index.html 就是假绿。
+
+    2026-11-04 实测：我自己的探针用了 `/health/live`（正确是 `/api/health/live`），
+    拿到 HTTP 200 就以为服务健康，实际上拿到的是前端首页。
+    """
+    from fastapi.testclient import TestClient
+
+    client = TestClient(main_module.app)
+    for path in ("/health/live", "/healthz", "/readyz", "/livez/check"):
+        response = client.get(path)
+        assert response.status_code == 404, path
+        assert b"<!doctype html" not in response.content.lower(), path
+
+    # 真接口不受影响
+    assert client.get("/api/health/live").status_code == 200
+
+
 def _expected_startup_task_names(main_module, extra=()):
     """BUS_TERMINAL_DISABLE_STARTUP_TASKS 有意豁免的任务（见 main.py startup_event）。
 
@@ -3339,6 +3357,9 @@ def _expected_startup_task_names(main_module, extra=()):
     种子永远投递不到 amane 库内，后者只读写本地库，没有外部副作用。
     辅助服务健康看护（health_deps_alert_loop）同理：NAS 上没有别的监控，
     它被挡住的话备份静默失败就永远没人知道。
+    半夜静默模式（qb_quiet_hours_loop）也必须豁免：被挡住的话用户配的时间段到点
+    不会暂停，凌晨照样满速上传 —— 功能等于没上线。是否真的生效由 config 表里的
+    qb_quiet_hours.enabled 决定，循环空转没有副作用。
     """
     names = {
         "groom_torrents_task",
@@ -3346,6 +3367,8 @@ def _expected_startup_task_names(main_module, extra=()):
         "translation_progress_snapshot_loop",
         "health_deps_alert_loop",
     }
+    if main_module.config.QB_QUIET_HOURS_TICK_ENABLED:
+        names.add("qb_quiet_hours_loop")
     if main_module.config.TRANSLATION_BACKFILL_ENABLED:
         names.add("translation_backfill_loop")
     if main_module.config.FEED_PRELOAD_REFRESH_ENABLED:
@@ -3829,6 +3852,9 @@ def test_discovery_fresh_cache_deduplicates_without_remote_fetch(main_module):
 
 def test_subscription_match_creates_review_candidate_when_auto_download_is_disabled(main_module):
     service = main_module.get_subscription_service()
+    # 订阅检索与详情抓取在真实环境里都隔 5 分钟；测试里不能真等。
+    service.detail_throttle = None
+    service.list_throttle = None
     main_module.db.set_config("auto_download_enabled", "false")
     source_url = main_module.normalize_scraper_url("/genre/candidate-review")
     movie_id = "CANDIDATE-REVIEW-001"
@@ -3965,6 +3991,9 @@ def test_automation_candidate_query_guardrails(main_module):
 
 def test_subscription_refresh_does_not_reopen_rejected_download_candidate(main_module):
     service = main_module.get_subscription_service()
+    # 订阅检索与详情抓取在真实环境里都隔 5 分钟；测试里不能真等。
+    service.detail_throttle = None
+    service.list_throttle = None
     main_module.db.set_config("auto_download_enabled", "false")
     movie_id = "CANDIDATE-REJECTED-001"
     magnet = "magnet:?xt=urn:btih:" + "e" * 40
@@ -4090,6 +4119,82 @@ def test_dashboard_reuses_fresh_metrics_snapshot(main_module):
     assert response.status_code == 200
     assert response.json()["data"]["movies_count"] == 101
     assert response.json()["data"]["queue_stats"] == {"pending": 2}
+
+
+def test_dashboard_background_refresh_does_not_overwrite_newer_snapshot(main_module):
+    """后台刷新不得覆盖比它更新的快照（lost update）。
+
+    触发路径：/api/stats/dashboard 命中过期快照 → 调度后台刷新线程 → 该线程
+    稍后回写真实统计。若回写是无条件的，就会把期间写入的新快照覆盖掉
+    （曾把 dashboard 统计刷成真实值，导致测试间歇性 assert 9 == 101）。
+
+    这里刻意走真实端点，不直接调内部函数，保证回归覆盖的是线上那条路径。
+    """
+    import threading
+    import time as _time
+    from fastapi.testclient import TestClient
+
+    snapshot = {
+        "movies_count": 101,
+        "watched_count": 7,
+        "actresses_count": 23,
+        "followed_actresses_count": 5,
+        "subscribed_actresses_count": 5,
+        "total_downloads": 17,
+        "subscriptions_count": 3,
+        "queue_stats": {"pending": 2},
+        "download_trend": [{"date": "2026-01-01", "count": 1}],
+    }
+
+    original_fetch = main_module.fetch_dashboard_metrics
+    release = threading.Event()
+
+    def slow_fetch():
+        # 模拟真实统计里那条昂贵的全表扫描：先卡住，等新快照写入后再放行。
+        release.wait(timeout=5)
+        return {
+            "movies_count": 9, "watched_count": 0, "actresses_count": 0,
+            "followed_actresses_count": 0, "subscribed_actresses_count": 0,
+            "total_downloads": 0, "subscriptions_count": 0,
+            "queue_stats": {"pending": 0}, "download_trend": [],
+        }
+
+    main_module.fetch_dashboard_metrics = slow_fetch
+    try:
+        # 落一份快照并把时间戳改老，强制下一次读取走"过期 → 调度后台刷新"分支。
+        main_module.db.set_cache(main_module.DASHBOARD_METRICS_CACHE_KEY, snapshot)
+        conn = main_module.db.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE cache SET updated_at = ? WHERE key = ?",
+                (_time.time() - 3600, main_module.DASHBOARD_METRICS_CACHE_KEY),
+            )
+            conn.commit()
+        finally:
+            main_module.db._release_connection(conn)
+
+        # 命中过期快照：立刻返回旧值，同时后台线程开始跑 slow_fetch。
+        response = TestClient(main_module.app).get("/api/stats/dashboard")
+        assert response.status_code == 200
+
+        # 后台线程还在跑的时候写入更新的快照。
+        main_module.db.set_cache(main_module.DASHBOARD_METRICS_CACHE_KEY, snapshot)
+        release.set()
+
+        # 等后台线程真正结束，再读缓存。
+        for _ in range(200):
+            if main_module.dashboard_metrics_refresh_scheduled is False:
+                break
+            _time.sleep(0.02)
+
+        cached = main_module.db.get_cache_full(main_module.DASHBOARD_METRICS_CACHE_KEY, track=False)
+        assert cached is not None
+        assert cached["value"]["movies_count"] == 101, "后台刷新覆盖了更新的快照"
+    finally:
+        release.set()
+        main_module.fetch_dashboard_metrics = original_fetch
+        main_module.dashboard_metrics_refresh_scheduled = False
 
 
 def test_config_secrets_are_masked_and_preserved(main_module):
@@ -6325,9 +6430,13 @@ def test_groom_torrents_delivers_after_seeding_limit(main_module):
     pause_calls = []
     move_calls = []
     tag_calls = []
+    service = main_module.get_download_service()
+    delivery_folder = main_module.get_qb_delivery_folder()
+    original_poll = service.delivery_verify_poll_seconds
     original_stop_event = main_module.stop_event
     original_get_qb_session = main_module.get_qb_session
     original_get_torrents = main_module.qb_api.get_torrents
+    original_get_by_hashes = main_module.qb_api.get_torrents_by_hashes
     original_set_share_limits = main_module.qb_api.set_share_limits
     original_add_tags = main_module.qb_api.add_tags
     original_pause = main_module.qb_api.pause_torrents
@@ -6351,11 +6460,17 @@ def test_groom_torrents_delivers_after_seeding_limit(main_module):
             "total_size": 1024,
         }
     ]
+    # 投递后回查：桩表示 relocate 成功，save_path 已到投递目录
+    main_module.qb_api.get_torrents_by_hashes = lambda s, b, hashes: [
+        {"hash": "b" * 40, "name": "TST-902 Completed Movie",
+         "state": "pausedUP", "save_path": delivery_folder}
+    ]
     main_module.qb_api.set_share_limits = lambda *args, **kwargs: True
     main_module.qb_api.add_tags = lambda session, base_url, hashes, tags: tag_calls.append((hashes, tags)) or True
     main_module.qb_api.pause_torrents = lambda session, base_url, hashes: pause_calls.append(hashes) or True
     main_module.qb_api.set_torrent_location = lambda session, base_url, hashes, location: move_calls.append((hashes, location)) or True
     main_module.config.GROOM_TASK_INTERVAL = 0
+    service.delivery_verify_poll_seconds = 0.01
     try:
         main_module.db.set_config("seeding_time_limit_min", 60)
         main_module.groom_torrents_task()
@@ -6364,12 +6479,14 @@ def test_groom_torrents_delivers_after_seeding_limit(main_module):
         main_module.stop_event = original_stop_event
         main_module.get_qb_session = original_get_qb_session
         main_module.qb_api.get_torrents = original_get_torrents
+        main_module.qb_api.get_torrents_by_hashes = original_get_by_hashes
         main_module.qb_api.set_share_limits = original_set_share_limits
         main_module.qb_api.add_tags = original_add_tags
         main_module.qb_api.pause_torrents = original_pause
         main_module.qb_api.set_torrent_location = original_set_location
         main_module.config.GROOM_TASK_INTERVAL = original_interval
         main_module.schedule_amane_ingest = original_schedule_amane_ingest
+        service.delivery_verify_poll_seconds = original_poll
 
     assert pause_calls == [["b" * 40]]
     assert move_calls == [(["b" * 40], main_module.get_qb_delivery_folder())]
@@ -6391,10 +6508,14 @@ def _run_groom_with_torrent(main_module, torrent, seeding_limit=60):
 
     fake_session = object()
     pause_calls, move_calls, tag_calls = [], [], []
+    delivery_folder = main_module.get_qb_delivery_folder()
+    service = main_module.get_download_service()
+    original_poll = service.delivery_verify_poll_seconds
     saved = (
         main_module.stop_event,
         main_module.get_qb_session,
         main_module.qb_api.get_torrents,
+        main_module.qb_api.get_torrents_by_hashes,
         main_module.qb_api.set_share_limits,
         main_module.qb_api.add_tags,
         main_module.qb_api.pause_torrents,
@@ -6406,11 +6527,16 @@ def _run_groom_with_torrent(main_module, torrent, seeding_limit=60):
     main_module.stop_event = FakeStopEvent()
     main_module.get_qb_session = lambda: (fake_session, "http://qb.local")
     main_module.qb_api.get_torrents = lambda session, base_url, tag=None: [torrent]
+    # 投递后回查：桩表示 qB 已经把 save_path 改到了投递目录（relocate 真成功）
+    main_module.qb_api.get_torrents_by_hashes = lambda s, b, hashes: [
+        {**torrent, "save_path": delivery_folder, "state": "pausedUP"}
+    ]
     main_module.qb_api.set_share_limits = lambda *args, **kwargs: True
     main_module.qb_api.add_tags = lambda s, b, hashes, tags: tag_calls.append((hashes, tags)) or True
     main_module.qb_api.pause_torrents = lambda s, b, hashes: pause_calls.append(hashes) or True
     main_module.qb_api.set_torrent_location = lambda s, b, hashes, loc: move_calls.append((hashes, loc)) or True
     main_module.config.GROOM_TASK_INTERVAL = 0
+    service.delivery_verify_poll_seconds = 0.01
     try:
         main_module.db.set_config("seeding_time_limit_min", seeding_limit)
         main_module.groom_torrents_task()
@@ -6419,6 +6545,7 @@ def _run_groom_with_torrent(main_module, torrent, seeding_limit=60):
             main_module.stop_event,
             main_module.get_qb_session,
             main_module.qb_api.get_torrents,
+            main_module.qb_api.get_torrents_by_hashes,
             main_module.qb_api.set_share_limits,
             main_module.qb_api.add_tags,
             main_module.qb_api.pause_torrents,
@@ -6426,6 +6553,7 @@ def _run_groom_with_torrent(main_module, torrent, seeding_limit=60):
             main_module.config.GROOM_TASK_INTERVAL,
             original_seeding_limit,
         ) = saved
+        service.delivery_verify_poll_seconds = original_poll
         main_module.db.set_config(
             "seeding_time_limit_min",
             original_seeding_limit if original_seeding_limit is not None
@@ -6504,10 +6632,13 @@ def test_groom_delivery_notifies_ingest_after_move(main_module):
     notified = []
     order = []
     service = main_module.get_download_service()
+    delivery_folder = main_module.get_qb_delivery_folder()
     original_hook = service.on_download_completed
+    original_poll = service.delivery_verify_poll_seconds
     original_stop_event = main_module.stop_event
     original_get_qb_session = main_module.get_qb_session
     original_get_torrents = main_module.qb_api.get_torrents
+    original_get_by_hashes = main_module.qb_api.get_torrents_by_hashes
     original_set_share_limits = main_module.qb_api.set_share_limits
     original_add_tags = main_module.qb_api.add_tags
     original_pause = main_module.qb_api.pause_torrents
@@ -6528,6 +6659,11 @@ def test_groom_delivery_notifies_ingest_after_move(main_module):
             "total_size": 1024,
         }
     ]
+    # 投递回查：桩表示 relocate 成功，save_path 已到投递目录
+    main_module.qb_api.get_torrents_by_hashes = lambda s, b, hashes: [
+        {"hash": "c" * 40, "name": "TST-903 Delivered Movie",
+         "state": "pausedUP", "save_path": delivery_folder}
+    ]
     service.on_download_completed = lambda movie_id, torrent: notified.append(movie_id)
     main_module.qb_api.set_share_limits = lambda *args, **kwargs: True
     main_module.qb_api.add_tags = lambda session, base_url, hashes, tags: True
@@ -6536,15 +6672,18 @@ def test_groom_delivery_notifies_ingest_after_move(main_module):
         lambda session, base_url, hashes, location: order.append(("move", len(notified))) or True
     )
     main_module.config.GROOM_TASK_INTERVAL = 0
+    service.delivery_verify_poll_seconds = 0.01
     try:
         main_module.db.set_config("seeding_time_limit_min", 60)
         main_module.groom_torrents_task()
     finally:
         service.on_download_completed = original_hook
+        service.delivery_verify_poll_seconds = original_poll
         main_module.db.set_config("seeding_time_limit_min", original_seeding_limit if original_seeding_limit is not None else main_module.config.SEEDING_TIME_LIMIT)
         main_module.stop_event = original_stop_event
         main_module.get_qb_session = original_get_qb_session
         main_module.qb_api.get_torrents = original_get_torrents
+        main_module.qb_api.get_torrents_by_hashes = original_get_by_hashes
         main_module.qb_api.set_share_limits = original_set_share_limits
         main_module.qb_api.add_tags = original_add_tags
         main_module.qb_api.pause_torrents = original_pause
@@ -8252,7 +8391,7 @@ def test_numeric_environment_config_falls_back_on_dirty_values():
     import config
 
     keys = {
-        "SUBSCRIPTION_CHECK_INTERVAL": 4 * 3600,
+        "SUBSCRIPTION_CHECK_INTERVAL": 12 * 3600,
         "GROOM_TASK_INTERVAL": 60,
         "SEEDING_MAINTENANCE_INTERVAL": 4 * 3600,
         "DISK_MONITOR_INTERVAL": 60,
@@ -8313,7 +8452,7 @@ def test_main_import_tolerates_dirty_runtime_environment_values():
                     "expected_path = os.path.join(os.environ['DATA_DIR'], 'movies.db').replace('\\\\', '/'); "
                     "assert main.SUBSCRIPTION_JELLYFIN_SYNC_TIMEOUT == 3.0; "
                     "assert main.DISCOVERY_CACHE_TTL == 21600; "
-                    "assert main.INFORMATION_FLOW_PRELOAD_PAGES == 3; "
+                    "assert main.INFORMATION_FLOW_PRELOAD_PAGES == 1; "
                     "assert main.config.DATABASE_URL == f'sqlite:///{expected_path}'; "
                     "assert main.db.db_path.replace('\\\\', '/') == expected_path"
                 ),
@@ -8479,3 +8618,195 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def test_groom_retries_delivered_torrent_whose_files_never_moved(main_module):
+    """Delivered 标签 + 文件仍在下载目录 = 假投递，必须摘标签重来。
+
+    生产事故（2026-10-27）：40 个种子在 setLocation 返回 200 后 save_path 仍停在
+    /downloads/88888，标签却已打上，groom 见到标签就无条件跳过，231 GB 卡了两天。
+    """
+    torrent = {
+        "hash": "e" * 40,
+        "name": "TST-905 Stuck Movie",
+        "tags": f"jav,{main_module.SEEDING_LIMIT_TAG},{main_module.DOWNLOAD_RECORDED_TAG},Delivered",
+        "seeding_time": 90 * 60,
+        "state": "pausedUP",
+        "progress": 1,
+        "save_path": "/downloads/88888",
+        "content_path": "/downloads/88888/TST-905 Stuck Movie",
+        "total_size": 1024,
+    }
+    removed = []
+    qb = main_module.qb_api
+    original_remove = qb.remove_tags
+    original_schedule = main_module.schedule_amane_ingest
+    qb.remove_tags = lambda s, b, hashes, tags: removed.append((hashes, tags)) or True
+    main_module.schedule_amane_ingest = lambda movie_id, title=None: True
+    try:
+        pause_calls, move_calls, tag_calls = _run_groom_with_torrent(main_module, torrent)
+    finally:
+        qb.remove_tags = original_remove
+        main_module.schedule_amane_ingest = original_schedule
+
+    assert removed == [(["e" * 40], "Delivered")], "必须先摘掉墓碑标签"
+    assert move_calls == [(["e" * 40], main_module.get_qb_delivery_folder())], "然后重新投递"
+    assert (["e" * 40], "Delivered") in tag_calls, "投递确认落位后重新打标签"
+
+
+def test_groom_skips_delivered_torrent_already_in_delivery_folder(main_module):
+    """真的搬过的种子不能被反复重投，否则每轮都把已入库的文件再搬一次。"""
+    delivery = main_module.get_qb_delivery_folder()
+    torrent = {
+        "hash": "f" * 40,
+        "name": "TST-906 Landed Movie",
+        "tags": f"jav,{main_module.SEEDING_LIMIT_TAG},{main_module.DOWNLOAD_RECORDED_TAG},Delivered",
+        "seeding_time": 90 * 60,
+        "state": "pausedUP",
+        "progress": 1,
+        "save_path": delivery,
+        "content_path": f"{delivery}/TST-906 Landed Movie",
+        "total_size": 1024,
+    }
+    removed = []
+    qb = main_module.qb_api
+    original_remove = qb.remove_tags
+    qb.remove_tags = lambda s, b, hashes, tags: removed.append((hashes, tags)) or True
+    try:
+        pause_calls, move_calls, tag_calls = _run_groom_with_torrent(main_module, torrent)
+    finally:
+        qb.remove_tags = original_remove
+
+    assert removed == []
+    assert move_calls == []
+
+
+def test_groom_issues_at_most_one_relocate_per_round(main_module):
+    """qB 的 relocate 是串行队列：一轮只发一笔，别整批堆进去。
+
+    实测 13.9 GB 要搬约 3 分钟。整批发 40 笔 setLocation 会让 qB 把全部种子的
+    save_path 提前改成目标路径、文件却都还没动，状态彻底混乱。
+    """
+    class FakeStopEvent:
+        def __init__(self):
+            self.stopped = False
+
+        def is_set(self):
+            return self.stopped
+
+        def wait(self, _timeout):
+            self.stopped = True
+            return True
+
+    def _ready(h, name):
+        return {
+            "hash": h,
+            "name": name,
+            "tags": f"jav,{main_module.SEEDING_LIMIT_TAG},{main_module.DOWNLOAD_RECORDED_TAG}",
+            "seeding_time": 90 * 60,
+            "state": "pausedUP",
+            "progress": 1,
+            "save_path": "/downloads/88888",
+            "total_size": 1024,
+        }
+
+    a = _ready("1" * 40, "TST-910 First Movie")
+    b = _ready("2" * 40, "TST-911 Second Movie")
+
+    move_calls = []
+    qb = main_module.qb_api
+    saved = (main_module.stop_event, main_module.get_qb_session, qb.get_torrents,
+             qb.get_torrents_by_hashes, qb.set_torrent_location, qb.add_tags,
+             qb.pause_torrents, qb.set_share_limits,
+             main_module.config.GROOM_TASK_INTERVAL,
+             main_module.db.get_config("seeding_time_limit_min"))
+    service = main_module.get_download_service()
+    original_poll = service.delivery_verify_poll_seconds
+
+    main_module.stop_event = FakeStopEvent()
+    main_module.get_qb_session = lambda: (object(), "http://qb.local")
+    qb.get_torrents = lambda session, base_url, tag=None: [a, b]
+    # 回查：桩表示还没搬完（save_path 仍在下载目录），逼出「本轮只发一笔」
+    qb.get_torrents_by_hashes = lambda s, base_url, hashes: [
+        t for t in (a, b) if t["hash"] in (hashes or [])
+    ]
+    qb.set_torrent_location = lambda s, base_url, hashes, loc: move_calls.append(hashes) or True
+    qb.add_tags = lambda s, base_url, hashes, tags: True
+    qb.pause_torrents = lambda s, base_url, hashes: True
+    qb.set_share_limits = lambda *a, **kw: True
+    main_module.config.GROOM_TASK_INTERVAL = 0
+    service.delivery_verify_poll_seconds = 0.01
+    service.delivery_verify_timeout_seconds = 0.05
+    try:
+        main_module.db.set_config("seeding_time_limit_min", 60)
+        main_module.groom_torrents_task()
+    finally:
+        (main_module.stop_event, main_module.get_qb_session, qb.get_torrents,
+         qb.get_torrents_by_hashes, qb.set_torrent_location, qb.add_tags,
+         qb.pause_torrents, qb.set_share_limits,
+         main_module.config.GROOM_TASK_INTERVAL, original) = saved
+        service.delivery_verify_poll_seconds = original_poll
+        service.delivery_verify_timeout_seconds = 60.0
+        main_module.db.set_config(
+            "seeding_time_limit_min",
+            original if original is not None else main_module.config.SEEDING_TIME_LIMIT,
+        )
+
+    assert len(move_calls) == 1, "一轮只能发一笔 relocate，实际 %d 笔" % len(move_calls)
+
+
+def test_groom_leaves_relocating_torrent_tags_alone(main_module):
+    """正在 relocate 的种子不能先摘标签、再被 state 白名单拦下。
+
+    qB 在 relocate 一开始就把 save_path 改成目标路径，文件却还没过去。
+    以前 state 白名单排在 Delivered 判定之后，这类种子会先被摘掉标签、
+    然后因为 state=moving 被拦下不投递 —— 标签白丢，片子也没搬。
+    """
+    class FakeStopEvent:
+        def __init__(self):
+            self.stopped = False
+
+        def is_set(self):
+            return self.stopped
+
+        def wait(self, _timeout):
+            self.stopped = True
+            return True
+
+    moving = {
+        "hash": "7" * 40,
+        "name": "TST-914 Moving Movie",
+        "tags": f"jav,{main_module.SEEDING_LIMIT_TAG},Delivered",
+        "seeding_time": 90 * 60,
+        "state": "moving",
+        "progress": 1,
+        "save_path": "/hp/_incoming",
+        "content_path": "/hp/_incoming/TST-914 Moving Movie",
+        "total_size": 1024,
+    }
+    removed, move_calls = [], []
+    qb = main_module.qb_api
+    saved = (main_module.stop_event, main_module.get_qb_session, qb.get_torrents,
+             qb.remove_tags, qb.set_torrent_location,
+             main_module.config.GROOM_TASK_INTERVAL,
+             main_module.db.get_config("seeding_time_limit_min"))
+    main_module.stop_event = FakeStopEvent()
+    main_module.get_qb_session = lambda: (object(), "http://qb.local")
+    qb.get_torrents = lambda session, base_url, tag=None: [moving]
+    qb.remove_tags = lambda s, b, hashes, tags: removed.append((hashes, tags)) or True
+    qb.set_torrent_location = lambda s, b, hashes, loc: move_calls.append(hashes) or True
+    main_module.config.GROOM_TASK_INTERVAL = 0
+    try:
+        main_module.db.set_config("seeding_time_limit_min", 60)
+        main_module.groom_torrents_task()
+    finally:
+        (main_module.stop_event, main_module.get_qb_session, qb.get_torrents,
+         qb.remove_tags, qb.set_torrent_location,
+         main_module.config.GROOM_TASK_INTERVAL, original) = saved
+        main_module.db.set_config(
+            "seeding_time_limit_min",
+            original if original is not None else main_module.config.SEEDING_TIME_LIMIT,
+        )
+
+    assert removed == [], "moving 中的种子不该被摘标签"
+    assert move_calls == []

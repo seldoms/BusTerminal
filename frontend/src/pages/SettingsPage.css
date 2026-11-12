@@ -571,3 +571,199 @@ input:checked + .switch-slider:before {
 .jellyfin-library-actions .control-hint {
     margin: 0;
 }
+
+/* ===== 半夜静默模式（下载客户端页） ===== */
+/* 一行 = 一个时间段：时间输入 + 星期点选 + 删除。
+   窄屏时折成两行，时间在上、星期在下，避免 7 个圆点被挤成两行参差。 */
+.quiet-hours-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding: 10px 12px;
+    margin-bottom: 10px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-md);
+    background: var(--bg-dark);
+}
+
+.quiet-hours-times {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* .settings-input 是 width:100%，在时间行里必须收回来，否则会把整行撑开 */
+.quiet-hours-time {
+    width: 118px;
+    padding: 0 10px;
+    font-variant-numeric: tabular-nums;
+}
+
+.quiet-hours-dash {
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+.quiet-hours-days {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.day-chip {
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border-radius: 50%;
+    border: 1px solid var(--border-light);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.day-chip:hover {
+    border-color: var(--brand);
+    color: var(--text-main);
+}
+
+.day-chip.active {
+    background: var(--brand);
+    border-color: var(--brand);
+    color: var(--bg-dark);
+    font-weight: 600;
+}
+
+.quiet-hours-remove {
+    margin-left: auto;
+    padding: 6px 10px;
+    min-width: 0;
+}
+
+@media (max-width: 720px) {
+    .quiet-hours-remove {
+        margin-left: 0;
+    }
+}
+
+/* ===== 抓取节奏（SettingsScheduleTab） ===== */
+.schedule-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border-light);
+}
+
+.schedule-header .toggle-label {
+    display: block;
+    margin-bottom: 4px;
+}
+
+.schedule-header .toggle-help {
+    display: block;
+    max-width: 620px;
+    line-height: 1.6;
+}
+
+.schedule-actions {
+    display: flex;
+    gap: 8px;
+    flex: none;
+}
+
+.schedule-actions .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 12px;
+    font-size: 13px;
+}
+
+.schedule-list {
+    display: flex;
+    flex-direction: column;
+    margin-top: 4px;
+}
+
+.schedule-row {
+    display: grid;
+    grid-template-columns: minmax(180px, 1fr) minmax(280px, 1.1fr);
+    gap: 12px 20px;
+    align-items: center;
+    padding: 12px 0;
+    border-bottom: 1px dashed var(--border-light);
+}
+
+.schedule-row:last-child {
+    border-bottom: none;
+}
+
+.schedule-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+}
+
+.schedule-help {
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.55;
+}
+
+.schedule-control {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
+}
+
+.schedule-interval {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.schedule-number-input {
+    width: 92px;
+    flex: none;
+    text-align: right;
+}
+
+.schedule-unit-select {
+    width: 96px;
+    flex: none;
+}
+
+.schedule-times-input {
+    width: 100%;
+    max-width: 260px;
+}
+
+.schedule-effective {
+    font-size: 12px;
+    color: var(--brand);
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.schedule-footnote {
+    margin: 10px 0 0;
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.6;
+}
+
+@media (max-width: 820px) {
+    .schedule-row {
+        grid-template-columns: 1fr;
+        gap: 8px;
+    }
+}

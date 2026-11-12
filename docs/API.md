@@ -12,7 +12,7 @@ The service currently has no built-in authentication. Keep it on a trusted LAN o
 - `local-write`: changes BusTerminal's local database/cache/configuration; verify in an isolated test database.
 - `external-write`: may control qBittorrent/Jellyfin or enqueue real downloads; automated tests must mock the external service.
 
-Operations: 129 total; 70 read-only; 46 local-write; 13 external-write.
+Operations: 138 total; 74 read-only; 51 local-write; 13 external-write.
 
 ## Endpoints
 
@@ -70,12 +70,15 @@ Operations: 129 total; 70 read-only; 46 local-write; 13 external-write.
 | `GET` | `/api/cleanup/candidates` | `read-only` | - | query:status, query:limit, query:offset | - | Get Cleanup Candidates |
 | `POST` | `/api/cleanup/candidates/{candidate_id}/approve` | `local-write` | - | path:candidate_id* | required | Approve Cleanup Candidate |
 | `POST` | `/api/cleanup/candidates/{candidate_id}/reject` | `local-write` | - | path:candidate_id* | required | Reject Cleanup Candidate |
+| `GET` | `/api/config/schedule` | `read-only` | - | - | - | Get Scrape Schedule |
+| `POST` | `/api/config/schedule` | `local-write` | - | - | required | Update Scrape Schedule |
 | `GET` | `/api/config/system` | `read-only` | - | - | - | Get System Config |
 | `POST` | `/api/config/system` | `local-write` | - | - | required | Update System Config |
 | `GET` | `/api/detail` | `read-only` | - | query:url*, query:movie_id, query:title | - | Get Movie Detail |
 | `GET` | `/api/discovery/movies` | `read-only` | - | query:source, query:page, query:rank_type, query:force_refresh | - | Get Discovery Movies Cached |
 | `GET` | `/api/discovery/movies/raw` | `read-only` | - | query:source, query:page, query:rank_type | - | Get Discovery Movies |
 | `POST` | `/api/discovery/preload` | `local-write` | - | query:pages | - | Preload Discovery Movies |
+| `GET` | `/api/discovery/scrape-budget` | `read-only` | - | - | - | Get Discovery Scrape Budget |
 | `GET` | `/api/discovery/sources` | `read-only` | - | - | - | Get Discovery Sources |
 | `POST` | `/api/download` | `external-write` | - | - | required | Download Movie |
 | `POST` | `/api/download/magnet` | `external-write` | - | - | required | Download Magnet |
@@ -128,6 +131,9 @@ Operations: 129 total; 70 read-only; 46 local-write; 13 external-write.
 | `GET` | `/api/qb/config` | `read-only` | - | - | - | Get Qb Config |
 | `POST` | `/api/qb/config` | `local-write` | - | - | required | Update Qb Config |
 | `GET` | `/api/qb/dashboard` | `read-only` | - | - | - | Get Qb Dashboard |
+| `GET` | `/api/qb/quiet-hours` | `read-only` | - | - | - | Get Qb Quiet Hours |
+| `POST` | `/api/qb/quiet-hours` | `local-write` | - | - | optional | Update Qb Quiet Hours |
+| `POST` | `/api/qb/quiet-hours/resume` | `local-write` | - | - | - | Resume Qb Quiet Hours |
 | `GET` | `/api/qb/status` | `read-only` | - | - | - | Get Qb Status |
 | `GET` | `/api/qb/torrents` | `read-only` | - | query:category, query:limit, query:offset | - | Get Qb Torrents |
 | `POST` | `/api/qb/torrents/control` | `external-write` | - | - | required | Control Qb Torrents |
@@ -141,6 +147,9 @@ Operations: 129 total; 70 read-only; 46 local-write; 13 external-write.
 | `GET` | `/api/subscriptions/covers` | `read-only` | - | query:url* | - | Get Subscription Covers |
 | `POST` | `/api/subscriptions/refresh` | `local-write` | - | query:url* | - | Refresh Subscription |
 | `GET` | `/api/subscriptions/stats` | `read-only` | - | query:include_decorative_covers | - | Get Subscription Stats |
+| `POST` | `/api/subtitles/backfill` | `local-write` | - | query:limit | - | Backfill Subtitles |
+| `GET` | `/api/subtitles/coverage` | `read-only` | - | - | - | Subtitle Coverage |
+| `POST` | `/api/subtitles/fetch` | `local-write` | - | - | required | Fetch Subtitle Endpoint |
 | `GET` | `/api/tasks/external` | `read-only` | - | query:status, query:task_type, query:limit, query:offset | - | Get External Tasks |
 | `GET` | `/api/tasks/status` | `read-only` | - | - | - | Get Task Status |
 | `POST` | `/api/translate/batch` | `local-write` | - | - | required | Batch Translate |

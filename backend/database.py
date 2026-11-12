@@ -38,6 +38,8 @@ from common_utils import redact_log_message
 # 2026-09-24 防二次污染：番号归一化的唯一事实来源（与清洗脚本共用同一实现）
 from movie_code import normalize_movie_code
 from cover_upgrade_service import should_replace_cover
+# 2026-11-04 KI-054：拒答话术的判据放在 translation_guard（翻译闸门与读取兜底共用一套）
+from translation_guard import detect_refusal
 
 logger = logging.getLogger(__name__)
 ALLOW_UNSAFE_PATH_OUTPUT = "BUS_TERMINAL_SHOW_UNSAFE_PATHS"
@@ -64,6 +66,7 @@ SCHEMA_MIGRATIONS = (
     (9, "download_queue_options"),
     (10, "local_files_amane_identity"),
     (11, "local_files_jellyfin_identity"),
+    (12, "local_files_subtitle_state"),
 )
 
 
@@ -196,7 +199,12 @@ def is_bad_translation_text(value: Any) -> bool:
 
     if any(text.startswith(prefix) for prefix in _TRANSLATION_REFUSAL_PREFIXES):
         return True
-    return any(marker in text for marker in _TRANSLATION_REFUSAL_MARKERS)
+    if any(marker in text for marker in _TRANSLATION_REFUSAL_MARKERS):
+        return True
+    # 带内容安全对齐的模型会把整条标题换成一句「抱歉，我无法提供此类内容翻译。」，
+    # 上面的词表是按「中文进→回元评论」那批句式写的，覆盖不到这批（KI-054）。
+    # 这里复用翻译闸门同一套模板，读出来就回落到原文，不必等库里那 74 条清理完。
+    return detect_refusal(text)
 
 
 def sanitize_movie_title_record(data: Dict) -> Dict:
@@ -464,15 +472,38 @@ class Database:
         # Initialise schema for PostgreSQL
         self.init_db()
 
+    def _acquire_pooled_connection(self, timeout_seconds: float = 8.0):
+        """从池里取连接，池满时**排队等**而不是立刻失败。
+
+        `ThreadedConnectionPool.getconn()` 在超出 `maxconn` 时是直接抛
+        `PoolError("connection pool exhausted")`，不排队 —— 容器重建瞬间 20 多个
+        后台任务同时起来抢 10 个连接，必然踩中（2026-11-04 实测：
+        `auto_delete_watched_daily` 在 09:14:21 报 PoolError，任务状态从此挂红）。
+        真正的池耗尽（有连接跑长事务）不能无限等，所以只等有限时间，超时仍抛。
+        """
+        deadline = time.monotonic() + timeout_seconds
+        delay = 0.05
+        while True:
+            try:
+                return self.pg_pool.getconn()
+            except Exception as exc:
+                exhausted = pg_pool is not None and isinstance(exc, pg_pool.PoolError) \
+                    and 'exhausted' in str(exc).lower()
+                remaining = deadline - time.monotonic()
+                if not exhausted or remaining <= 0:
+                    raise
+                time.sleep(min(delay, remaining))
+                delay = min(delay * 2, 0.5)
+
     def _postgres_connection(self):
-        conn = self.pg_pool.getconn()
+        conn = self._acquire_pooled_connection()
         # 池子里可能残留已被对端掐断的连接（空闲超时/网络抖动），拿出来先验一下：
         # 坏连接直接丢弃换新的，否则会持续报 "server closed the connection unexpectedly"
         for _ in range(2):
             if not getattr(conn, 'closed', 0):
                 break
             self.pg_pool.putconn(conn, close=True)
-            conn = self.pg_pool.getconn()
+            conn = self._acquire_pooled_connection()
         try:
             conn.set_client_encoding('UTF8')
         except Exception:
@@ -550,7 +581,11 @@ class Database:
                         file_path TEXT,
                         symlink_path TEXT,
                         file_size BIGINT,
-                        added_at DOUBLE PRECISION
+                        added_at DOUBLE PRECISION,
+                        subtitle_status TEXT,
+                        subtitle_lang TEXT,
+                        subtitle_source TEXT,
+                        subtitle_fetched_at DOUBLE PRECISION
                     )
                     """
                 )
@@ -717,7 +752,11 @@ class Database:
                         file_path TEXT,
                         symlink_path TEXT,
                         file_size INTEGER,
-                        added_at REAL
+                        added_at REAL,
+                        subtitle_status TEXT,
+                        subtitle_lang TEXT,
+                        subtitle_source TEXT,
+                        subtitle_fetched_at REAL
                     );
                     CREATE TABLE IF NOT EXISTS cache (
                         key TEXT PRIMARY KEY,
@@ -914,6 +953,8 @@ class Database:
                 self._ensure_local_files_amane_columns(cursor)
             elif version == 11:
                 self._ensure_local_files_jellyfin_columns(cursor)
+            elif version == 12:
+                self._ensure_local_files_subtitle_columns(cursor)
             self._mark_schema_migration_applied(cursor, version, name)
             logging.info("Applied schema migration %s (%s)", version, name)
 
@@ -1043,6 +1084,21 @@ class Database:
         for column_name, column_type in (
             ("jellyfin_item_id", "TEXT"),
             ("jellyfin_synced_at", timestamp_type),
+        ):
+            if columns and column_name not in columns:
+                cursor.execute(f"ALTER TABLE local_files ADD COLUMN {column_name} {column_type}")
+
+    def _ensure_local_files_subtitle_columns(self, cursor) -> None:
+        """local_files 记外挂字幕的抓取结果，避免对同一部片反复打站点。"""
+        if not self._table_exists(cursor, "local_files"):
+            return
+        columns = self._get_table_columns(cursor, "local_files")
+        timestamp_type = "DOUBLE PRECISION" if self.is_postgres else "REAL"
+        for column_name, column_type in (
+            ("subtitle_status", "TEXT"),
+            ("subtitle_lang", "TEXT"),
+            ("subtitle_source", "TEXT"),
+            ("subtitle_fetched_at", timestamp_type),
         ):
             if columns and column_name not in columns:
                 cursor.execute(f"ALTER TABLE local_files ADD COLUMN {column_name} {column_type}")
@@ -1977,6 +2033,32 @@ class Database:
         finally:
             self._release_connection(conn)
 
+    def get_movie_id_by_code_norm(self, code) -> Optional[str]:
+        """按归一化番号查库内 id。
+
+        同一个番号在库里有两种 id 形态（`JUR-097` 与 amane 的 `jur00097`），而外部源
+        （netflav 等）给的是自己的写法（可能是 `JUR-97`）。抓详情前先用 code_norm
+        归一到库内 id，否则 `javbus.com/JUR-97` 会直接 404（2026-11-05 实测）。
+        """
+        norm = normalize_movie_code(code)
+        if not norm:
+            return None
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            sql = (
+                "SELECT id FROM movies WHERE code_norm = %s LIMIT 1"
+                if self.is_postgres
+                else "SELECT id FROM movies WHERE code_norm = ? LIMIT 1"
+            )
+            cursor.execute(sql, (norm,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return str(dict(row).get("id") or "").strip() or None
+        finally:
+            self._release_connection(conn)
+
     def search_movies(self, query: str = None, limit: int = 50, offset: int = 0) -> List[Dict]:
         conn = self.get_connection()
         try:
@@ -2148,6 +2230,46 @@ class Database:
             )
             conn.commit()
             self.record_cache_event(key, "write")
+        finally:
+            self._release_connection(conn)
+
+    def set_cache_if_unchanged(self, key: str, value: Dict, expected_updated_at: Optional[float]) -> bool:
+        """Compare-and-set write for a cache row.
+
+        Only overwrites the row when its ``updated_at`` still equals
+        ``expected_updated_at``. This keeps a slow background refresh from
+        clobbering a snapshot that was written after the refresh was
+        scheduled (a lost update).
+
+        Returns True when the row was written, False when the guard failed
+        (someone else updated the row in the meantime) or the row vanished.
+        """
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            if expected_updated_at is None:
+                # No known baseline: only write when the row does not exist yet.
+                sql = (
+                    "INSERT INTO cache (key, value, updated_at) VALUES (%s, %s, %s) ON CONFLICT (key) DO NOTHING"
+                    if self.is_postgres
+                    else "INSERT OR IGNORE INTO cache (key, value, updated_at) VALUES (?, ?, ?)"
+                )
+                cursor.execute(sql, (key, json.dumps(value, ensure_ascii=False), time.time()))
+                written = cursor.rowcount > 0
+            else:
+                sql = (
+                    "UPDATE cache SET value = %s, updated_at = %s WHERE key = %s AND updated_at = %s"
+                    if self.is_postgres
+                    else "UPDATE cache SET value = ?, updated_at = ? WHERE key = ? AND updated_at = ?"
+                )
+                cursor.execute(
+                    sql,
+                    (json.dumps(value, ensure_ascii=False), time.time(), key, expected_updated_at),
+                )
+                written = cursor.rowcount > 0
+            conn.commit()
+            self.record_cache_event(key, "write" if written else "write_skipped")
+            return written
         finally:
             self._release_connection(conn)
 
@@ -2586,12 +2708,51 @@ class Database:
         finally:
             self._release_connection(conn)
 
-    def get_translation_backfill_batch(self, cursor_date: str, limit: int) -> List[Dict]:
+    def get_translation_originals(self, translated_text: str, limit: int = 5) -> List[str]:
+        """按**译文**反查原文（日文原名）。
+
+        为什么需要反查：库里 actresses.name 存的是**中文译名**（`天使萌`），
+        而 JavBus / netflav 站上用的是**日文原名**（`天使もえ`）。按中文译名
+        去站点搜索会 404/搜不到 —— 2026-11-07 生产实测 20 条里 0 条命中，
+        换成反查出来的日文原名则命中 9 条。
+
+        translations 表存的是 `original_text → translated_text`，
+        所以反查就是按 `translated_text` 查 `original_text`。
+        """
+        value = str(translated_text or "").strip()
+        if not value:
+            return []
+
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            placeholder = "%s" if self.is_postgres else "?"
+            sql = (
+                "SELECT original_text FROM translations "
+                f"WHERE translated_text = {placeholder} LIMIT {int(limit)}"
+            )
+            cursor.execute(sql, (value,))
+            rows = cursor.fetchall()
+            return [
+                str(row["original_text"]) if isinstance(row, dict) else str(row[0])
+                for row in rows
+                if row
+            ]
+        finally:
+            self._release_connection(conn)
+
+    def get_translation_backfill_batch(self, cursor_date: str, limit: int, cursor_title: str = "") -> List[Dict]:
         """
         取一批仍未翻译的标题，供历史积压回填使用。
 
         按**发行日期从新到旧**取，新片先翻；条件用 release_date <= cursor_date，
         保证游标一次只推进一天、不跳条。返回项含 release_date，调用方据此推进游标。
+
+        ⚠️ 游标必须带标题（cursor_title），不能只用日期：
+        同一天可能有几百条待翻（实测 2026-01-22 有 213 条），只按日期推进会
+        在这一天上**死循环** —— 标题要等翻译落库才从 `NOT EXISTS` 里消失，
+        只要有任意一条被质量闸门拦下（不落库），游标就永远卡在这天，
+        后面 122 万条一条都翻不到（2026-11-09 实测）。
         """
         if not limit or limit <= 0:
             return []
@@ -2607,9 +2768,18 @@ class Database:
                 "AND m.release_date ~ '^[0-9]{4}' AND m.release_date <= " + placeholder + " "
                 "AND m.original_title ~ '[ぁ-んァ-ヶ]' "
                 "AND NOT EXISTS (SELECT 1 FROM translations t WHERE t.original_text = m.original_title) "
-                "ORDER BY m.release_date DESC LIMIT " + placeholder
             )
-            cursor.execute(sql, (cursor_date, limit))
+            params: List[Any] = [cursor_date]
+            if cursor_title:
+                # 同一天内继续往后翻：取 (release_date, original_title) 字典序更大的
+                sql += (
+                    "AND (m.release_date < " + placeholder + " OR (m.release_date = " + placeholder +
+                    " AND m.original_title > " + placeholder + ")) "
+                )
+                params.extend([cursor_date, cursor_date, cursor_title])
+            sql += "ORDER BY m.release_date DESC, m.original_title ASC LIMIT " + placeholder
+            params.append(limit)
+            cursor.execute(sql, tuple(params))
             rows = cursor.fetchall()
             return [
                 {"original_title": row["original_title"], "release_date": row["release_date"]}
@@ -2822,8 +2992,17 @@ class Database:
         execution_result: str = None,
         error_summary: str = None,
         payload: Dict = None,
+        dedupe_repeat_within_day: bool = False,
     ) -> bool:
-        """Record a lifecycle event and update the latest per-movie state."""
+        """Record a lifecycle event and update the latest per-movie state.
+
+        ``dedupe_repeat_within_day`` 用于「每轮重复评估」类事件（目前是下载权限被拒）：
+        订阅/发现循环每轮都会重新评估同一批片子，结果不变却每次都 INSERT 一条。
+        生产实测 7 天 22,370 条 ``download_permission_denied``，只涉及 1,468 部片子。
+        开启后，若该片**最近一条事件**仍是同类型 + 同原因、且落在同一 UTC 日内，
+        就判定为无新信息并跳过整次写入；中间插入过别的事件（例如权限放行后又再次
+        被拒）时最近一条不同，会正常记一条新的，不会丢状态变化。
+        """
         if not movie_id:
             return False
 
@@ -2858,6 +3037,25 @@ class Database:
         try:
             cursor = conn.cursor()
             placeholder = "%s" if self.is_postgres else "?"
+
+            if dedupe_repeat_within_day:
+                # UTC 自然日界。用 Python 算时间戳，PG / SQLite 两边通用，
+                # 也避免 date_trunc / strftime 的方言差异。
+                day_start = (int(now) // 86400) * 86400
+                cursor.execute(
+                    f"SELECT event_type, reason, created_at FROM movie_lifecycle_events "
+                    f"WHERE movie_id = {placeholder} ORDER BY created_at DESC LIMIT 1",
+                    (movie_id,),
+                )
+                last = cursor.fetchone()
+                last_row = dict(last) if last else {}
+                if (
+                    last_row.get("event_type") == event_type
+                    and (last_row.get("reason") or None) == safe_reason
+                    and float(last_row.get("created_at") or 0) >= day_start
+                ):
+                    return False
+
             cursor.execute(
                 f"SELECT {', '.join(status_values)} FROM movie_lifecycle WHERE movie_id = {placeholder}",
                 (movie_id,),
@@ -3730,6 +3928,52 @@ class Database:
             )
         return self.get_active_queue_entry(movie_id=task.get("movie_id")) if task else None
 
+    def get_active_queue_entries_for_reconcile(self) -> List[Dict]:
+        """取「已提交到 qB、但状态从未回写」的队列行，供对账使用。
+
+        只取 submitted / processing / waiting_external_service：``pending`` 还没
+        提交到 qB，hash 不在 qB 是正常的，不能据此判成孤儿。
+        """
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id, magnet, movie_id, status, created_at FROM download_queue "
+                "WHERE status IN ('submitted', 'processing', 'waiting_external_service')"
+            )
+            return [dict(row) for row in (cursor.fetchall() or [])]
+        finally:
+            self._release_connection(conn)
+
+    def apply_queue_reconciliation(self, updates: List[Dict[str, Any]]) -> int:
+        """批量落对账结论（不改 lifecycle 事件表）。
+
+        这类状态修正属于运维对账，不是业务状态迁移；逐条记事件会把刚压下去的
+        事件表再刷一遍。结论写进 ``error_message`` 即可追溯。
+        返回实际更新的行数（WHERE 带状态条件，避免覆盖并发下已变化的行）。
+        """
+        if not updates:
+            return 0
+        conn = self.get_connection()
+        placeholder = "%s" if self.is_postgres else "?"
+        now = time.time()
+        applied = 0
+        try:
+            cursor = conn.cursor()
+            for item in updates:
+                cursor.execute(
+                    f"UPDATE download_queue SET status = {placeholder}, "
+                    f"error_message = {placeholder}, updated_at = {placeholder} "
+                    f"WHERE id = {placeholder} "
+                    f"AND status IN ('submitted', 'processing', 'waiting_external_service')",
+                    (item["status"], item.get("error_message"), now, item["id"]),
+                )
+                applied += max(0, int(cursor.rowcount or 0))
+            conn.commit()
+            return applied
+        finally:
+            self._release_connection(conn)
+
     def update_download_status(self, task_id: str, status: str, error: str = None):
         conn = self.get_connection()
         task = None
@@ -4438,13 +4682,28 @@ class Database:
         **纯汉字名也收**：200 条抽检里实测 `宮前幸恵` → `宫前幸惠`，汉字被转成简体，
         同样不符合「保留原样」的口径。只含 ASCII 字母数字/符号的排除——那是番号不是人名。
 
+        🔴 **`aliases` 也必须收**（2026-11-09 生产实测）：
+        `actresses.name` 存的是**中文译名**，全库 102895 条里只有 33299 条含假名；
+        **日文原名在 `aliases` 里**（`彩香` → `新井エリー（晶エリー、大沢佑香）`、
+        `筱田佑` → `篠田ゆう`），有假名的 alias 行有 64127 条。
+        只收 `name` 的话，约 **2/3 的艺人在标题里会被模型音译成汉字**
+        （实测 `美々香さん` → `米米卡桑`），直接违背「艺人姓名保留日文假名」的口径，
+        而且音译后译文里没有假名，质量闸门也抓不到 —— 只能靠护栏提前挡住。
+
+        `aliases` 一格里可能塞多个名字（`新井エリー（晶エリー、大沢佑香）`），
+        按分隔符拆开逐个收。过滤规则跟 `name` 一致（含假名或含汉字、排除纯 ASCII）：
+        纯汉字的 alias 片段实测只有 253 种且全是人名（`七海原` / `椎名由奈` / `大沢佑香`），
+        它们同样会被模型转成简体（`大沢佑香` → `大泽佑香`），要一起护住。
+
         过滤放在 Python 侧：PG 支持 `~` 正则而 SQLite 不支持，双后端下写法会分叉。
         """
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
             cursor.execute(
-                f"SELECT name FROM actresses WHERE name IS NOT NULL AND TRIM(name) <> '' LIMIT {int(limit)}"
+                "SELECT name, aliases FROM actresses "
+                "WHERE name IS NOT NULL AND TRIM(name) <> '' "
+                f"LIMIT {int(limit)}"
             )
             rows = cursor.fetchall()
         finally:
@@ -4452,14 +4711,27 @@ class Database:
         kana = re.compile(r"[぀-ゟ゠-ヿ]")
         cjk = re.compile(r"[一-鿿]")
         latin_only = re.compile(r"^[\x00-\x7f\s·・.\-_/]+$")
+        alias_split = re.compile(r"[、，,；;（）()【】\[\]「」『』/／|｜｜\s]+")
         seen = set()
-        for row in rows:
-            text = str(_row_value(row, "name", 0) or "").strip()
+
+        def _accept(text: str) -> bool:
+            text = (text or "").strip()
             if len(text) < 2:
-                continue
+                return False
             if kana.search(text) or cjk.search(text):
-                if not latin_only.match(text):
-                    seen.add(text)
+                return not latin_only.match(text)
+            return False
+
+        for row in rows:
+            name = str(_row_value(row, "name", 0) or "")
+            if _accept(name):
+                seen.add(name.strip())
+            aliases = str(_row_value(row, "aliases", 1) or "")
+            if not aliases:
+                continue
+            for part in alias_split.split(aliases):
+                if _accept(part):
+                    seen.add(part.strip())
         return sorted(seen)
 
     def get_actresses_missing_avatar(
@@ -4961,6 +5233,103 @@ class Database:
         finally:
             self._release_connection(conn)
 
+    def update_local_file_subtitle(
+        self,
+        movie_id: str,
+        status: str,
+        *,
+        language: Optional[str] = None,
+        source: Optional[str] = None,
+        fetched_at: Optional[float] = None,
+    ) -> None:
+        """记录一次字幕抓取结果（ok / skipped / not_found / invalid / error）。"""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            placeholder = "%s" if self.is_postgres else "?"
+            sql = (
+                f"UPDATE local_files SET subtitle_status = {placeholder}, subtitle_lang = {placeholder}, "
+                f"subtitle_source = {placeholder}, subtitle_fetched_at = {placeholder} "
+                f"WHERE movie_id = {placeholder}"
+            )
+            cursor.execute(
+                sql,
+                (status, language, source, fetched_at or time.time(), movie_id),
+            )
+            conn.commit()
+        finally:
+            self._release_connection(conn)
+
+    def get_local_files_missing_subtitle(
+        self,
+        limit: int = 30,
+        retry_after_seconds: float = 604800,
+        error_retry_seconds: float = 21600,
+    ) -> List[Dict]:
+        """挑出还没字幕、且值得再试一次的本地片。
+
+        按状态分级冷却，别拿同一个片一直打站点：
+
+        - `NULL`（从没试过）→ 立刻
+        - `not_found` / `invalid` → `retry_after_seconds`（默认 7 天）。
+          站点上本来就没有的东西、站点给的空 SRT，短期都不会变，反复问只是白白打人家接口
+          （2026-11-03 实测 IPX867 每次 backfill 都被捞出来白问一次）。
+        - `error` → `error_retry_seconds`（默认 6 小时）。网络抖动不该等 7 天，
+          但也不该每轮重试。
+        - `ok` / `path_missing` / `skipped` → 永不。`path_missing` 是影片文件已经
+          不在原路径了，再抓也是同一个结果，等运维处理路径（KI-062）。
+        """
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            placeholder = "%s" if self.is_postgres else "?"
+            now = time.time()
+            stale_cutoff = now - float(retry_after_seconds)
+            error_cutoff = now - float(error_retry_seconds)
+            sql = f"""
+                SELECT lf.movie_id, lf.file_path, m.code_norm, lf.subtitle_status
+                FROM local_files lf
+                JOIN movies m ON m.id = lf.movie_id
+                WHERE lf.file_path IS NOT NULL AND lf.file_path <> ''
+                  AND m.code_norm IS NOT NULL AND m.code_norm <> ''
+                  AND (
+                        lf.subtitle_status IS NULL
+                     OR (lf.subtitle_status IN ('not_found', 'invalid')
+                         AND (lf.subtitle_fetched_at IS NULL OR lf.subtitle_fetched_at < {placeholder}))
+                     OR (lf.subtitle_status = 'error'
+                         AND (lf.subtitle_fetched_at IS NULL OR lf.subtitle_fetched_at < {placeholder}))
+                  )
+                ORDER BY CASE WHEN lf.subtitle_fetched_at IS NULL THEN 0 ELSE 1 END,
+                         lf.subtitle_fetched_at,
+                         lf.added_at DESC
+                LIMIT {placeholder}
+            """
+            cursor.execute(sql, (stale_cutoff, error_cutoff, int(limit)))
+            rows = cursor.fetchall()
+            return [dict(row) if isinstance(row, dict) else {
+                "movie_id": row[0], "file_path": row[1], "code_norm": row[2], "subtitle_status": row[3]
+            } for row in rows]
+        finally:
+            self._release_connection(conn)
+
+    def get_subtitle_status_summary(self) -> Dict[str, int]:
+        """按抓取状态统计本地片，给前端展示"还有多少没字幕"。"""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COALESCE(subtitle_status, 'none') AS status, COUNT(*) AS total "
+                "FROM local_files GROUP BY COALESCE(subtitle_status, 'none')"
+            )
+            summary: Dict[str, int] = {}
+            for row in cursor.fetchall():
+                key = row["status"] if isinstance(row, dict) else row[0]
+                total = row["total"] if isinstance(row, dict) else row[1]
+                summary[str(key)] = int(total)
+            return summary
+        finally:
+            self._release_connection(conn)
+
     def get_local_file_movie_ids(self, movie_ids: List[str]) -> set:
         if not movie_ids:
             return set()
@@ -5378,12 +5747,19 @@ class Database:
         finally:
             self._release_connection(conn)
 
-    def get_pending_downloads_list(self, limit: int = 50) -> List[Dict]:
-        """Return pending movies from the pending_downloads table."""
+    def get_pending_downloads_list(self, limit: int = 50, *, order_by_added: bool = True) -> List[Dict]:
+        """Return pending movies from the pending_downloads table.
+
+        `order_by_added=False` 时按「最早加入优先」返回 —— 调度器要的是
+        **最该被重试**的那批（等得最久的），而不是最新加入的那批。
+        生产实测：pending 有 1637 条，而默认只取最新 500 条 →
+        老条目永远轮不到重试，统计口径也跟着失真。
+        """
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
-            sql = "SELECT * FROM pending_downloads WHERE status = %s ORDER BY added_at DESC LIMIT %s" if self.is_postgres else "SELECT * FROM pending_downloads WHERE status = ? ORDER BY added_at DESC LIMIT ?"
+            order = "added_at ASC" if not order_by_added else "added_at DESC"
+            sql = f"SELECT * FROM pending_downloads WHERE status = %s ORDER BY {order} LIMIT %s" if self.is_postgres else f"SELECT * FROM pending_downloads WHERE status = ? ORDER BY {order} LIMIT ?"
             cursor.execute(sql, ('pending', limit))
             rows = cursor.fetchall()
             return [dict(r) for r in rows]

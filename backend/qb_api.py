@@ -30,6 +30,26 @@ def exception_type(exc: Exception) -> str:
     return exc.__class__.__name__
 
 
+class QBSessionExpired(Exception):
+    """qB 会话失效（401/403）。
+
+    必须抛出来而不是返回空列表：调用方看到空列表会当成「qB 里没有种子」，
+    于是 groom 既不报错、也不重建会话、也不打日志，静默空转。生产上 qB 容器
+    重启后旧 SID 全废，这条链路正是这样白跑了一整天（2026-10-27 事故）。
+    """
+
+    def __init__(self, status_code: int = 403):
+        super().__init__(f"qb_session_expired:{status_code}")
+        self.status_code = status_code
+
+
+def _raise_if_auth_failed(resp) -> None:
+    """qB 的鉴权失败统一处理：401/403 一律抛 QBSessionExpired。"""
+    if resp is not None and getattr(resp, "status_code", None) in (401, 403):
+        logger.warning("QB 会话失效 (status=%s)", resp.status_code)
+        raise QBSessionExpired(resp.status_code)
+
+
 def _dict_value(value) -> Dict:
     return value if isinstance(value, dict) else {}
 
@@ -170,17 +190,56 @@ def get_torrents(session: requests.Session, base_url: str, category: Optional[st
         
     try:
         resp = session.get(f"{base_url}/api/v2/torrents/info", params=params, timeout=5)
+        # 403 绝不能返回空列表：调用方会当成「没有种子」，groom 于是静默空转不报错
+        _raise_if_auth_failed(resp)
         if resp.ok:
             return _dict_items(resp.json())
         return []
+    except QBSessionExpired:
+        raise
     except (requests.exceptions.RequestException, ConnectionError, TimeoutError, OSError):
         raise
     except Exception as e:
         logger.error("获取种子列表失败: %s", exception_type(e))
         return []
 
-def add_magnet(session: requests.Session, base_url: str, magnet: str, save_path: Optional[str] = None, category: Optional[str] = None, tags: Optional[List[str]] = None) -> bool:
-    """添加磁力链接"""
+
+def get_torrents_by_hashes(session: requests.Session, base_url: str, hashes: List[str]) -> List[TorrentInfo]:
+    """按 hash 精确取种子（投递后回查落位用）。"""
+    joined = _join_values(hashes, '|')
+    if not _has_target(joined):
+        return []
+    try:
+        resp = session.get(
+            f"{base_url}/api/v2/torrents/info", params={'hashes': joined}, timeout=5
+        )
+        _raise_if_auth_failed(resp)
+        if resp.ok:
+            return _dict_items(resp.json())
+        return []
+    except QBSessionExpired:
+        raise
+    except (requests.exceptions.RequestException, ConnectionError, TimeoutError, OSError):
+        raise
+    except Exception as e:
+        logger.error("按 hash 获取种子失败: %s", exception_type(e))
+        return []
+
+def add_magnet(
+    session: requests.Session,
+    base_url: str,
+    magnet: str,
+    save_path: Optional[str] = None,
+    category: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    paused: bool = False,
+) -> bool:
+    """添加磁力链接。
+
+    ``paused=True`` 用于「先选片再开下」：种子里那些几百兆的广告 mp4 / .txt / .html
+    一旦开下就已经吃进流量和磁盘，等周期过滤器追上时残渣已经落盘。暂停加种 → 等元数据
+    → 只留最大的那个文件 → 恢复，才能做到一个字节垃圾都不下。
+    """
     data = {'urls': magnet}
     if save_path:
         data['savepath'] = save_path
@@ -190,6 +249,10 @@ def add_magnet(session: requests.Session, base_url: str, magnet: str, save_path:
         tags_text = _join_values(tags, ',')
         if tags_text:
             data['tags'] = tags_text
+    if paused:
+        data['paused'] = 'true'
+        # 不加 stopped：stopped 的种子 qB 不建任务队列，也不会去拉元数据，
+        # 那样就永远等不到文件列表、选不了片。
         
     try:
         resp = session.post(f"{base_url}/api/v2/torrents/add", data=data, timeout=5)
@@ -325,14 +388,23 @@ def resume_torrents(session: requests.Session, base_url: str, hashes: Union[str,
         return False
 
 def set_torrent_location(session: requests.Session, base_url: str, hashes: List[str], location: str) -> bool:
-    """设置下载位置 (移动文件)"""
+    """请求 qB 更换下载位置。
+
+    ⚠️ 返回值只代表「请求被 qB 接受」，**不代表文件真的搬完了**。qB 的 relocate 是
+    异步任务：HTTP 200 之后它才会去移动文件，失败也不会回传。生产上出现过 40 个
+    种子拿到 200、文件仍留在原目录、调用方据此打了「已投递」标签，从此永久跳过
+    （2026-10-27 事故）。需要「确实落位」的语义请用 DownloadService.deliver_torrent。
+    """
     hashes_str = _join_values(hashes, '|')
     if not _has_target(hashes_str) or not _has_target(location):
         return False
     data = {'hashes': hashes_str, 'location': location}
     try:
         resp = session.post(f"{base_url}/api/v2/torrents/setLocation", data=data, timeout=5)
+        _raise_if_auth_failed(resp)
         return resp.ok
+    except QBSessionExpired:
+        raise
     except (requests.exceptions.RequestException, ConnectionError, TimeoutError, OSError):
         raise
     except Exception as e:
@@ -358,9 +430,12 @@ def get_transfer_info(session: requests.Session, base_url: str) -> Dict:
     """获取全局传输信息（下载/上传速度、累计量等）"""
     try:
         resp = session.get(f"{base_url}/api/v2/transfer/info", timeout=5)
+        _raise_if_auth_failed(resp)
         if resp.ok:
             return _dict_value(resp.json())
         return {}
+    except QBSessionExpired:
+        raise
     except (requests.exceptions.RequestException, ConnectionError, TimeoutError, OSError):
         raise
     except Exception as e:
@@ -371,9 +446,13 @@ def get_main_data(session: requests.Session, base_url: str) -> Dict:
     """获取主数据（包含server_state和full_update标志）"""
     try:
         resp = session.get(f"{base_url}/api/v2/sync/maindata", params={'rid': 0}, timeout=5)
+        # 403 时返回 {} 会让面板显示「全部为 0」，看上去像 qB 空了，实际是会话失效
+        _raise_if_auth_failed(resp)
         if resp.ok:
             return _dict_value(resp.json())
         return {}
+    except QBSessionExpired:
+        raise
     except (requests.exceptions.RequestException, ConnectionError, TimeoutError, OSError):
         raise
     except Exception as e:

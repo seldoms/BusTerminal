@@ -104,8 +104,11 @@ services:
     logging:
       driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
+        # bus_terminal 一轮要刷几千行（抓取+翻译+订阅）。10MB×3 会被一轮翻译
+        # 失败风暴写满轮转掉 —— 2026-11-09 实测 44 小时的日志被整个冲掉，
+        # 故障现场查不到。50MB×5 = 250MB 上限。
+        max-size: "50m"
+        max-file: "5"
 
   # ------------------------------------------------------------------ 数据库
   bus_postgres:

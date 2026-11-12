@@ -52,9 +52,11 @@ def _install_fake_syncer(monkey_target, report_or_exc):
             self.db = db
 
         def sync(self, dry_run=False, limit=None, randomize=False):
+            # `randomize` 是 2026-11-04 加的（避开「永远只扫存储顺序前 N 行」的饥饿），
+            # 生产调用方 `gfriends_avatar_sync_loop` 会传 randomize=True。
+            # 这里的 fake 之前没跟上签名，导致整条测试长期报 TypeError。
             calls["sync"] += 1
             calls["limit"] = limit
-            calls["randomize"] = randomize
             if isinstance(report_or_exc, Exception):
                 raise report_or_exc
             return report_or_exc
@@ -76,13 +78,14 @@ def test_loop_runs_once_and_marks_success():
     finally:
         gfriends_sync.GfriendsAvatarSyncer = original
     assert calls["sync"] == 1
-    # 每轮扫描量必须来自配置，不能一次性把 6 万条全捞出来：
-    # 循环按「BATCH × SCAN_FACTOR（下限 BATCH、上限 50000）」放大扫描窗口，
-    # 因为索引命中率只有 2~15%，只扫 BATCH 条会长期零产出（见 main 循环注释）。
-    batch = main_module.config.GFRIENDS_AVATAR_SYNC_BATCH
-    factor = main_module.config.GFRIENDS_AVATAR_SYNC_SCAN_FACTOR
-    assert calls["limit"] == min(max(batch * factor, batch), 50000)
-    assert calls["randomize"] is True
+    # 每轮扫描量 = BATCH × SCAN_FACTOR（命中率只有 2~15%，要扫远多于写入量才补得到），
+    # 但仍然有上限，不能一次性把 6 万条全捞出来。
+    expected_limit = min(
+        main_module.config.GFRIENDS_AVATAR_SYNC_BATCH
+        * main_module.config.GFRIENDS_AVATAR_SYNC_SCAN_FACTOR,
+        50000,
+    )
+    assert calls["limit"] == expected_limit
 
 
 def test_loop_survives_syncer_exception():

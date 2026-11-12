@@ -1,5 +1,5 @@
 from typing import Any, Callable, Dict, Iterable, Optional, Set
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from movie_download_service import resolve_movie_detail_url
 from subscription_url_utils import (
@@ -83,10 +83,48 @@ def normalize_scraper_page_url(
     return url
 
 
+def normalize_netflav_subscription_url(
+    raw_url: Any, *, allowed_hosts: Iterable[Any]
+) -> Optional[str]:
+    """netflav 站点的订阅来源 URL（`/all?actress=<名字>`）。
+
+    订阅来源校验靠 SSRF 白名单挡危险 URL，白名单只放行 JavBus 的域名。
+    但库里**确实存着直接指向 netflav 的外部订阅**
+    （`https://netflav.com/all?actress=…`，2026-11-07 生产实测 3 条：
+    大島優香 / 奥田咲 / 東條なつ）—— 它们走 netflav 做「发现」，
+    不在 JavBus 白名单里就每轮被判 `invalid_subscription_url`，
+    `auto_crawl_subscriptions` 的 failed_count 恒为 3，连删除/刷新接口都用不了。
+
+    这里**单独**放行，且只认三件事：域名属于 netflav 自己（含配置注入的镜像）、
+    路径是 `/all`、带 `actress` 参数。其余一律不放行 —— 不把白名单开成洞。
+    """
+    value = str(raw_url or "").strip()
+    if not value or len(value) > 2048 or "\x00" in value or "\\" in value:
+        return None
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return None
+    if parsed.username or parsed.password:
+        return None
+    hosts = {str(host or "").strip().lower() for host in allowed_hosts or []}
+    if parsed.hostname.lower() not in hosts:
+        return None
+    path = (parsed.path or "").rstrip("/")
+    if path not in ("", "/all"):
+        return None
+    if any(part == ".." for part in path.split("/")):
+        return None
+    names = parse_qs(parsed.query or "").get("actress") or []
+    if not any(str(name or "").strip() for name in names):
+        return None
+    return value
+
+
 def normalize_subscription_source_url(
     raw_url: Any,
     *,
     normalize_external_url: Callable[[Any], Optional[str]],
+    normalize_netflav_url: Optional[Callable[[Any], Optional[str]]] = None,
 ) -> Optional[str]:
     value = str(raw_url or "").strip()
     internal_url = normalize_internal_subscription_url(value)
@@ -95,7 +133,12 @@ def normalize_subscription_source_url(
     legacy_internal_url = normalize_legacy_internal_subscription_alias(value)
     if legacy_internal_url:
         return legacy_internal_url
-    return normalize_external_url(value)
+    external_url = normalize_external_url(value)
+    if external_url:
+        return external_url
+    if normalize_netflav_url is not None:
+        return normalize_netflav_url(value)
+    return None
 
 
 def resolve_movie_detail_url_for_download(

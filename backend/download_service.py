@@ -2,6 +2,7 @@ import os
 import time
 from typing import Any, Callable, Dict, List, Optional
 
+import magnet_availability
 import media_policy
 
 
@@ -11,6 +12,13 @@ JAV_FILE_FILTER_TAG = "smart_filter_400mb"
 SEEDING_LIMIT_TAG = "seeding_limit_set"
 DOWNLOAD_RECORDED_TAG = "download_recorded"
 VIDEO_FILE_EXTS = media_policy.VIDEO_FILE_EXTS
+
+# 队列对账宽限期：提交后不足 24h 的种子可能还在排队/刚加种，
+# 不能因为 qB 暂时查不到就判成孤儿。
+QUEUE_RECONCILE_GRACE_SECONDS = 24 * 3600
+# 明确拿不到元数据的状态。stalledDL 不算 —— 它可能只是暂时没有速度，
+# 而且 qB 与 MoviePilot 共用，不能据此批量取消别人的种子。
+DEAD_TORRENT_STATES = {"metaDL", "error"}
 
 
 class DownloadService:
@@ -40,6 +48,8 @@ class DownloadService:
         on_download_completed: Optional[Callable[[str, Dict], None]] = None,
         check_library_presence: Optional[Callable[[str], Dict[str, Any]]] = None,
         is_blocked: Optional[Callable[..., Dict[str, Any]]] = None,
+        invalidate_qb_session: Optional[Callable[[], None]] = None,
+        delivery_path_probe: Optional[Callable[[str], bool]] = None,
     ):
         self.db = db
         self.qb_api = qb_api
@@ -64,6 +74,16 @@ class DownloadService:
         self.on_download_completed = on_download_completed
         self.check_library_presence = check_library_presence
         self.is_blocked = is_blocked
+        self.invalidate_qb_session = invalidate_qb_session
+        self.delivery_path_probe = delivery_path_probe
+        # 投递后回查落位的上限：同设备（storage 内两个目录）relocate 是 rename，
+        # 秒级完成；留足余量给跨设备/大目录的极端情况。
+        self.delivery_verify_timeout_seconds = 60.0
+        self.delivery_verify_poll_seconds = 2.0
+        # 加种暂停后等元数据的上限。磁力拿元数据通常是秒级，30s 足够；
+        # 拿不到就恢复下载，绝不把种子长期挂在暂停态。
+        self.post_add_metadata_timeout_seconds = 30.0
+        self.post_add_metadata_poll_seconds = 2.0
         self._dispatcher_last_warn = 0.0
 
     def _notify_download_completed(self, movie_id: Optional[str], torrent: Dict) -> bool:
@@ -82,6 +102,243 @@ class DownloadService:
                 self.safe_exception_label(exc),
             )
             return False
+
+    # ---------- 投递落位确认 / 会话自愈 ----------
+
+    @staticmethod
+    def _is_session_expired(exc: Exception) -> bool:
+        """判断异常是不是 qB 会话失效。
+
+        按类名判断而不是 isinstance：qb_api 是注入进来的模块，测试里是桩，
+        引真类做 isinstance 既耦合又会在桩上失效。
+        """
+        return type(exc).__name__ == "QBSessionExpired"
+
+    def fetch_torrents(self, tag: Optional[str] = None):
+        """读种子列表，会话失效时重建一次再试。
+
+        get_torrents 在 401/403 上抛 QBSessionExpired（不再返回空列表），这里是
+        唯一能把「qB 重启导致旧 SID 全废」自动修好的地方。以前这条路径静默拿到
+        空列表，groom 以为没有种子，不打日志不报错地空转了一整天（2026-10-27）。
+        """
+        session, base_url = self.get_qb_session()
+        if not session:
+            return None, None, []
+        try:
+            return session, base_url, self.qb_api.get_torrents(session, base_url, tag=tag) or []
+        except Exception as exc:
+            if not self._is_session_expired(exc):
+                raise
+            self.logger.warning("QB 会话失效，重建后重试一轮: %s", self.safe_exception_label(exc))
+
+        if self.invalidate_qb_session:
+            try:
+                self.invalidate_qb_session()
+            except Exception as exc:
+                self.logger.warning("重建 QB 会话失败: %s", self.safe_exception_label(exc))
+        session, base_url = self.get_qb_session()
+        if not session:
+            return None, None, []
+        return session, base_url, self.qb_api.get_torrents(session, base_url, tag=tag) or []
+
+    @staticmethod
+    def _path_under(path: Any, folder: str) -> bool:
+        value = str(path or "").rstrip("/")
+        return bool(value) and (value == folder or value.startswith(folder + "/"))
+
+    # qB 在 relocate 期间会占用的状态。这段时间 save_path 已经指向目标目录，
+    # 但文件还在旧位置 —— 光看路径会误判成「已落位」。
+    RELOCATE_PENDING_STATES = ("moving", "checkingup", "checkingdl", "checkingresume")
+
+    def delivered_really_landed(self, torrent: Dict[str, Any], delivery_folder: str) -> bool:
+        """判断打了 Delivered 的种子，文件是不是**真的**在投递目录下。
+
+        两道判据缺一不可：
+
+        1. **路径**：qB 自己回报的 save_path / content_path 要指向投递目录。
+        2. **状态**：不能还处于 moving/checking。
+
+        ⚠️ 第 2 条是踩出来的：qB 在 relocate **一开始**就把 save_path 改成目标路径，
+        此时文件一个字节都还没过去（实测 JUR-836：save_path 已是 `/hp/_incoming`，
+        而 `/hp/_incoming/JUR-836_4K60FPS` 根本不存在、源目录里那个 23.9 GB 文件
+        还在写）。只看路径的话，会把「正在搬」误判成「已经搬完」。
+
+        ⚠️ delivery_path_probe 默认不开：bus_terminal 容器看不到 qB 的下载目录
+        （`/hp`、`/downloads/88888` 在它里面都不存在），硬做实检会把所有种子判成
+        「原位置已空」从而全部跳过。只有给 bus 容器挂上同一份存储后才可启用。
+        """
+        folder = str(delivery_folder or "").rstrip("/")
+        if not folder:
+            # 没配投递目录就无从判断，保持旧行为，不误摘标签
+            return True
+        if str(torrent.get("state") or "").lower() in self.RELOCATE_PENDING_STATES:
+            return False
+        if self._path_under(torrent.get("save_path"), folder) or self._path_under(
+            torrent.get("content_path"), folder
+        ):
+            return True
+        if self.delivery_path_probe:
+            # qB 说还在原目录。若原路径已空，说明文件是被外部搬走的（手工救火等），
+            # 不是 relocate 假成功，此时不该摘标签重投。
+            actual = str(torrent.get("content_path") or "")
+            if actual:
+                try:
+                    if not self.delivery_path_probe(actual):
+                        return True
+                except Exception:
+                    return False
+        return False
+
+    def _reread_torrent(self, session, base_url, torrent_hash: str) -> Optional[Dict[str, Any]]:
+        """按 hash 重新读单个种子，拿它的真实 save_path / state。"""
+        try:
+            items = self.qb_api.get_torrents_by_hashes(session, base_url, [torrent_hash]) or []
+        except Exception as exc:
+            self.logger.warning(
+                "回查种子失败: %s (%s)",
+                self.display_value_for_log(torrent_hash),
+                self.safe_exception_label(exc),
+            )
+            return None
+        for item in items:
+            if isinstance(item, dict):
+                return item
+        return None
+
+    def _wait_unless_stopped(self, seconds: float) -> bool:
+        """短暂等待；收到停止信号返回 False。
+
+        不用 stop_event.wait() 做轮询间隔：groom 主循环拿它当整轮间隔，中止语义
+        是「这一轮结束、整体退出」，而这里只是秒级的轮询间隔，混用会让两者互相干扰。
+        """
+        deadline = time.monotonic() + max(0.0, seconds)
+        while time.monotonic() < deadline:
+            if self.stop_event is not None and self.stop_event.is_set():
+                return False
+            time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+        return self.stop_event is None or not self.stop_event.is_set()
+
+    def deliver_torrent(self, session, base_url, torrent: Dict[str, Any], target_delivery: str) -> bool:
+        """把种子文件搬到投递目录，并确认**真的搬到了**才返回 True。
+
+        qB 的 relocate 是异步任务，setLocation 的 200 只代表「请求已接受」。这里投递
+        后轮询回查，直到 save_path/content_path 落在目标目录下；超时或 relocate 已结束
+        仍未落位一律判失败，让调用方下个周期重试 —— 绝不能带着「已投递」标签上墙。
+        """
+        torrent_hash = torrent.get("hash")
+        if not torrent_hash:
+            return False
+        if not self.qb_api.set_torrent_location(session, base_url, [torrent_hash], target_delivery):
+            return False
+
+        # 先给 qB 一个排队/rename 的窗口，避免第一次查询还没开始搬就判失败。
+        # 同设备（storage 内两个目录）是 rename，秒级完成。
+        if not self._wait_unless_stopped(self.delivery_verify_poll_seconds):
+            return False
+
+        deadline = time.monotonic() + self.delivery_verify_timeout_seconds
+        while time.monotonic() < deadline:
+            fresh = self._reread_torrent(session, base_url, torrent_hash)
+            if fresh is None:
+                return False
+            if self.delivered_really_landed(fresh, target_delivery):
+                return True
+            if str(fresh.get("state") or "").lower() != "moving":
+                # 已不在 moving 却没落位 = relocate 结束且失败，再等也没用
+                self.logger.warning(
+                    "qB relocate 结束但文件未落位: %s (state=%s, save_path=%s)",
+                    self.display_value_for_log(fresh.get("name")),
+                    fresh.get("state"),
+                    self.display_path_for_log(fresh.get("save_path")),
+                )
+                return False
+            if not self._wait_unless_stopped(self.delivery_verify_poll_seconds):
+                return False
+
+        self.logger.warning(
+            "投递确认超时（%.0fs）: %s",
+            self.delivery_verify_timeout_seconds,
+            self.display_value_for_log(torrent.get("name")),
+        )
+        return False
+
+    # ---------- 加种即选片（一个字节垃圾都不下） ----------
+
+    @staticmethod
+    def magnet_infohash(magnet: Any) -> Optional[str]:
+        """从磁力链接抠出 btih。拿不到就返回 None（调用方退回周期过滤）。"""
+        import re
+
+        match = re.search(r"urn:btih:([A-Za-z0-9]{32,40})", str(magnet or ""))
+        return match.group(1) if match else None
+
+    def apply_post_add_file_policy(self, session, base_url, torrent_hash: str) -> Dict[str, Any]:
+        """暂停状态下等元数据 → 只留最大的那个文件 → 恢复下载。
+
+        这是「小文件根本不下」的唯一正确时机：``filter_jav_torrent_files`` 只改
+        file priority，改之前已经下掉的字节不会退回去。加种时先暂停、拿到文件列表
+        立刻把所有非最大文件置 0、正片置 1，再恢复，残渣从源头上就不存在。
+
+        元数据迟迟不到（磁力还没连上 peer）时**必须恢复**，否则种子永远卡在暂停态；
+        恢复后交给既有的周期过滤器兜底，最多损失几秒垃圾流量。
+        """
+        if not torrent_hash:
+            return {"filtered": False, "reason": "missing_hash"}
+
+        deadline = time.monotonic() + self.post_add_metadata_timeout_seconds
+        files: List[Dict[str, Any]] = []
+        read_failed = False
+        while time.monotonic() < deadline:
+            try:
+                files = self.qb_api.get_torrent_files(session, base_url, torrent_hash) or []
+            except Exception as exc:
+                self.logger.warning(
+                    "等元数据时读文件列表失败: %s (%s)",
+                    self.display_value_for_log(torrent_hash),
+                    self.safe_exception_label(exc),
+                )
+                # 读文件列表本身报错就别再干等 30 秒了，直接恢复下载
+                read_failed = True
+                break
+            if files:
+                break
+            if not self._wait_unless_stopped(self.post_add_metadata_poll_seconds):
+                break
+
+        result: Dict[str, Any] = {"filtered": False}
+        if files:
+            try:
+                result = self.filter_jav_torrent_files(
+                    session, base_url, {"hash": torrent_hash}
+                ) or {"filtered": False}
+            except Exception as exc:
+                self.logger.warning(
+                    "加种选片失败: %s (%s)",
+                    self.display_value_for_log(torrent_hash),
+                    self.safe_exception_label(exc),
+                )
+                result = {"filtered": False, "reason": "filter_error"}
+        else:
+            result = {
+                "filtered": False,
+                "reason": "metadata_read_failed" if read_failed else "metadata_timeout",
+            }
+            self.logger.warning(
+                "加种后没拿到文件列表（%s），先恢复下载交给周期过滤: %s",
+                result["reason"],
+                self.display_value_for_log(torrent_hash),
+            )
+
+        # 无论选片成功与否都要恢复，否则种子永远不动
+        try:
+            self.qb_api.resume_torrents(session, base_url, [torrent_hash])
+        except Exception as exc:
+            self.logger.warning(
+                "恢复下载失败: %s (%s)",
+                self.display_value_for_log(torrent_hash),
+                self.safe_exception_label(exc),
+            )
+        return result
 
     def _check_library_presence(self, movie_id: str) -> Dict[str, Any]:
         """问 amane/Jellyfin 这部片是不是已经在库里。查不动就当没查过，不拦下载。"""
@@ -202,6 +459,10 @@ class DownloadService:
                 decision_status="blocked",
                 execution_result="blocked",
                 payload=payload,
+                # 订阅/发现循环每轮都会重新评估同一批片子，被每日限额挡掉的
+                # 结果一天内不会变；同片同原因同 UTC 日只记一条，避免事件表
+                # 被重复评估刷爆（生产实测 7 天 22,370 条 / 仅 1,468 部片子）。
+                dedupe_repeat_within_day=True,
             )
         return {
             "allowed": allowed,
@@ -505,7 +766,9 @@ class DownloadService:
             filtered_count = 0
             seeding_wait_count = 0
             try:
-                session, base_url = self.get_qb_session()
+                # fetch_torrents 内含会话自愈：403 会重建 SID 再试一次，而不是
+                # 拿一个空列表回去让 groom 以为「qB 里没种子」然后静默空转。
+                session, base_url, torrents = self.fetch_torrents(tag="jav")
                 if not session:
                     if self.stop_event.wait(self.config.GROOM_TASK_INTERVAL):
                         break
@@ -514,8 +777,18 @@ class DownloadService:
                 # 只处理 BusTerminal 自己发起的种子（add_magnet 打的 "jav" tag）。
                 # 这个 qB 与 MoviePilot 共用（辅种 / 刷流-自动 等共 600+ 个种子），
                 # 投递目录现在落在 amane 库内，误搬别人的种子会堆成待人工垃圾。
-                torrents = self.qb_api.get_torrents(session, base_url, tag="jav")
-                torrent_count = len(torrents or [])
+                torrents = torrents or []
+                torrent_count = len(torrents)
+                # 一次读齐，投递判定和落位校验都用同一个值
+                delivery_folder = self.get_qb_delivery_folder()
+                # qB 的 relocate 是串行队列，且大文件真会搬上几分钟（实测 13.9 GB
+                # 约 3 分钟）。整批发请求只会让队列越堆越长，所以每轮最多投递一个，
+                # 等它真的搬完再放下一个。
+                #
+                # ⚠️ 不用「有种子在 moving 就整体跳过」做闸门：qB 出现过 state 永久
+                # 停在 moving 的僵死种子，那样会把后面所有种子永久堵死（实测卡住
+                # 28 个 / 139 GB）。改成每轮发一笔，进度只取决于单颗种子。
+                issued_this_round = False
 
                 for torrent in torrents:
                     if self.stop_event.is_set():
@@ -587,17 +860,50 @@ class DownloadService:
                         # 其它失败（file_priority_failed / tag_update_failed）不打卡，
                         # 下一轮重试；打了卡就永远不会再补，垃圾会一直躺在盘上
 
-                    if self.safe_number(torrent.get("progress"), 0) < 1 or "delivered" in tags:
+                    if self.safe_number(torrent.get("progress"), 0) < 1:
                         continue
 
-                    state = state_now
                     # pausedup 必须在内：qB 达到做种限制后会把种子转成 pausedUP，
                     # 生产上已完成的 6 个 jav 种子全是这个状态，漏掉就一个都投递不出去。
                     # pauseddl 不能放进来 —— 那是「没下完且暂停下载」。
+                    #
+                    # ⚠️ 这一步必须排在 Delivered 判定之前：moving / checking 的种子
+                    # 正处在 relocate 中途（save_path 已指向目标、文件还在旧位置），
+                    # 若先跑 Delivered 判定就会把标签摘掉、又被这里拦下不投递，
+                    # 标签白白丢失。
+                    state = state_now
                     if state not in [
                         "completed", "uploading", "stalledup", "forcedup", "seeding", "pausedup",
                     ]:
                         continue
+
+                    # Delivered 是「已投递」的墓碑标签：groom 见到就永久跳过，不再重试。
+                    # 但它只在 setLocation 返回 200 时打上，而 qB 的 relocate 是异步的 ——
+                    # 生产上 40 个种子拿到 200、文件仍留在 /downloads/88888、标签却已打上，
+                    # 231 GB 卡了两天没人再碰。所以不能无条件跳过：先确认文件真的在投递
+                    # 目录下，否则摘掉标签让这一轮重新走投递流程。
+                    if "delivered" in tags:
+                        if self.delivered_really_landed(torrent, delivery_folder):
+                            continue
+                        if issued_this_round:
+                            # 本轮已经发过一笔 relocate，且这颗仍未落位。摘标签也
+                            # 投不出去，只会把标签状态搅乱、把日志刷满，下轮再说。
+                            continue
+                        self.logger.warning(
+                            "Delivered 标签但文件未落位，摘标签重投: %s (save_path=%s)",
+                            self.display_value_for_log(torrent.get("name")),
+                            self.display_path_for_log(torrent.get("save_path")),
+                        )
+                        if not self.qb_api.remove_tags(
+                            session, base_url, [torrent_hash], "Delivered"
+                        ):
+                            # 摘不掉就别往下走：继续投递会导致同一颗种子被反复搬
+                            self.logger.warning(
+                                "摘除 Delivered 标签失败，跳过本轮: %s",
+                                self.display_value_for_log(torrent.get("name")),
+                            )
+                            continue
+                        tags = [tag for tag in tags if tag.lower() != "delivered"]
 
                     movie_id = self.extract_movie_id_from_text(torrent.get("name", ""))
                     if movie_id and DOWNLOAD_RECORDED_TAG not in tags:
@@ -652,13 +958,31 @@ class DownloadService:
                     if "paused" not in state:
                         self.qb_api.pause_torrents(session, base_url, [torrent_hash])
 
-                    target_delivery = self.get_qb_delivery_folder()
+                    target_delivery = delivery_folder or self.get_qb_delivery_folder()
                     if not target_delivery:
                         self.logger.warning("Invalid qB delivery folder configured; torrent delivery skipped")
                         # 没有投递目录就当文件已在库内，照旧入库，否则片子永远进不了 amane。
                         self._notify_download_completed(movie_id, torrent)
                         continue
-                    if self.qb_api.set_torrent_location(session, base_url, [torrent_hash], target_delivery):
+                    # deliver_torrent 会回查 qB，确认文件真的搬到目标目录才返回 True。
+                    # 不能像以前那样拿 setLocation 的 200 当成功：qB 的 relocate 是异步的，
+                    # 200 只代表请求被接受，假成功会把种子打上 Delivered 永久挂起。
+                    if issued_this_round:
+                        # 本轮已经发过一笔 relocate，别把 qB 的串行队列堆起来
+                        self.logger.info(
+                            "本轮已投递过一颗种子，其余等下轮: %s",
+                            self.display_value_for_log(torrent.get("name")),
+                        )
+                        continue
+                    if self.delivered_really_landed(torrent, target_delivery):
+                        # 上一轮的 relocate 已经搬完，只是当时没等到确认 —— 不必再搬一次
+                        delivered_ok = True
+                    else:
+                        issued_this_round = True
+                        delivered_ok = self.deliver_torrent(
+                            session, base_url, torrent, target_delivery
+                        )
+                    if delivered_ok:
                         self.logger.info("Moved torrent to delivery folder: %s", self.display_path_for_log(target_delivery))
                         if movie_id:
                             self.db.record_lifecycle_event(
@@ -682,6 +1006,14 @@ class DownloadService:
                         if self._notify_download_completed(movie_id, torrent):
                             self.qb_api.add_tags(session, base_url, [torrent_hash], "Delivered")
                             delivered_count += 1
+                    else:
+                        # 投递没确认成功：不打标签，下个周期重试。这里必须显式记一笔，
+                        # 否则又回到「日志里什么都看不到、片子默默卡住」的老路。
+                        self.logger.warning(
+                            "投递未确认落位，下轮重试: %s (target=%s)",
+                            self.display_value_for_log(torrent.get("name")),
+                            self.display_path_for_log(target_delivery),
+                        )
 
                 self.task_registry.mark_success(
                     "groom_torrents_task",
@@ -752,18 +1084,36 @@ class DownloadService:
 
                                 self.logger.info("Dispatcher: submitting task %s", self.display_value_for_log(task.get("title")))
 
+                                # 下载目录 = 投递目录：qB 的 relocate 在 /downloads ↔ /hp
+                                # 之间是跨挂载点，rename 直接 EXDEV、只能整份拷贝，qB
+                                # 自己搬不动（实测 26 次回滚）。所以别再「先下到 /downloads
+                                # 再搬进 /hp」，直接下到投递目录，落位就是天然成立的。
+                                target_save = task.get("save_path") or self.get_qb_delivery_folder()
+
                                 success = self.qb_api.add_magnet(
                                     session,
                                     base_url,
                                     magnet=task["magnet"],
-                                    save_path=task.get("save_path"),
+                                    save_path=target_save,
                                     category=task.get("category"),
                                     tags=["jav", "BusTerminal"],
+                                    paused=True,
                                 )
 
                                 if success:
+                                    # 暂停加种 → 只留最大的那个文件 → 恢复。
+                                    # 放在 submitted 之前：选片没做完就不该算提交完。
+                                    policy = self.apply_post_add_file_policy(
+                                        session,
+                                        base_url,
+                                        self.magnet_infohash(task.get("magnet")),
+                                    )
                                     self.db.update_download_status(task["id"], "submitted")
-                                    self.logger.info("Dispatcher: submitted task %s", self.display_value_for_log(task.get("title")))
+                                    self.logger.info(
+                                        "Dispatcher: submitted task %s (选片=%s)",
+                                        self.display_value_for_log(task.get("title")),
+                                        "kept" if policy.get("filtered") else policy.get("reason"),
+                                    )
                                     submitted_count += 1
                                 else:
                                     self.db.defer_download_for_external_service(
@@ -880,3 +1230,89 @@ class DownloadService:
         if not outcome.get("ok"):
             return {"success": False, "message": outcome.get("reason"), "status": outcome.get("status")}
         return {"success": True, "data": {"task_id": task_id, "status": outcome.get("status")}}
+
+    def reconcile_download_queue_once(self, dry_run: bool = False) -> Dict[str, Any]:
+        """对账 download_queue 与 qB 里的真实种子（幂等，可反复跑）。
+
+        背景（2026-11-11 业务体检）：499 条 ``submitted`` 里只有 181 个 btih
+        还能在 qB 找到，**318 个早已不在**（最老 303.9 天），另有 6 个
+        ``metaDL`` 死种还挂在队列里。原因是队列状态只在「提交」时写一次，
+        之后无论下载完成、被删种还是根本没开始，都永远停在 ``submitted`` ——
+        既让运维看不出真实结果，又占着 active 唯一索引阻止同片重新下载。
+
+        只改队列状态，**不动 qB 里的任何种子**（删种属于独立的运维动作）。
+        ``pending`` 不参与对账：它还没提交到 qB，hash 查不到是正常的。
+        """
+        session, base_url = self.get_qb_session()
+        if not session:
+            return {"success": False, "message": "QB is not configured or unavailable"}
+        try:
+            torrents = self.qb_api.get_torrents(session, base_url) or []
+        except Exception as exc:
+            return {
+                "success": False,
+                "message": "qb_torrents_unavailable",
+                "error": self.safe_exception_label(exc),
+            }
+
+        by_hash: Dict[str, Dict[str, Any]] = {}
+        for torrent in torrents:
+            if not isinstance(torrent, dict):
+                continue
+            info_hash = magnet_availability.info_hash_to_hex(torrent.get("hash"))
+            if info_hash:
+                by_hash[info_hash] = torrent
+
+        rows = self.db.get_active_queue_entries_for_reconcile()
+        now = time.time()
+        updates: List[Dict[str, Any]] = []
+        stats = {
+            "success": True,
+            "dry_run": bool(dry_run),
+            "scanned": len(rows),
+            "qb_torrents": len(by_hash),
+            "cancelled_absent": 0,
+            "cancelled_dead": 0,
+            "unparseable": 0,
+            "unchanged": 0,
+        }
+
+        for row in rows:
+            info_hash = magnet_availability.info_hash_to_hex(row.get("magnet"))
+            if not info_hash:
+                stats["unparseable"] += 1
+                continue
+            created = float(row.get("created_at") or 0)
+            torrent = by_hash.get(info_hash)
+            if torrent is None:
+                if created and now - created >= QUEUE_RECONCILE_GRACE_SECONDS:
+                    updates.append({
+                        "id": row["id"],
+                        "status": "cancelled",
+                        "error_message": "reconciled: torrent_absent_from_qb",
+                    })
+                    stats["cancelled_absent"] += 1
+                    continue
+                stats["unchanged"] += 1
+                continue
+
+            state = str(torrent.get("state") or "")
+            added_on = float(torrent.get("added_on") or 0)
+            aged = (
+                now - added_on >= QUEUE_RECONCILE_GRACE_SECONDS
+                if added_on
+                else (created and now - created >= QUEUE_RECONCILE_GRACE_SECONDS)
+            )
+            if state in DEAD_TORRENT_STATES and aged:
+                updates.append({
+                    "id": row["id"],
+                    "status": "cancelled",
+                    "error_message": f"reconciled: dead_torrent_{state}",
+                })
+                stats["cancelled_dead"] += 1
+                continue
+            stats["unchanged"] += 1
+
+        stats["applied"] = 0 if dry_run else self.db.apply_queue_reconciliation(updates)
+        stats["pending_updates"] = len(updates)
+        return stats

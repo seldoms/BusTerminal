@@ -187,7 +187,7 @@ def test_detail_endpoint_does_not_block_on_translation(main_module):
 def test_preload_policy_and_daily_catchup_are_bounded(main_module):
     from discovery_service import MAX_PRELOAD_PAGES
 
-    assert main_module.INFORMATION_FLOW_PRELOAD_PAGES == 3
+    assert main_module.INFORMATION_FLOW_PRELOAD_PAGES == 1
     assert MAX_PRELOAD_PAGES == 30
     service = main_module.get_maintenance_service()
     assert service.should_run_daily_maintenance(datetime(2026, 7, 20, 1, 59), "2026-07-19") is False

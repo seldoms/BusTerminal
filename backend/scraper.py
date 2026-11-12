@@ -17,7 +17,10 @@ from database import db, is_bad_translation_text, strip_translation_control_toke
 import config # Import config module
 from domain_router import DomainRouter
 from ollama_translator import OllamaTranslator
-from translation_guard import TitleGuard
+from translation_guard import TitleGuard, is_name_only_title
+import javbus_path
+import magnet_availability
+import page_guard
 import wikipediaapi
 from jellyfin_api import jellyfin_client
 try:
@@ -38,6 +41,16 @@ logger = logging.getLogger(__name__)
 
 # 日文假名：标题里出现它，就说明这条还是原文、需要翻译
 JAPANESE_KANA_PATTERN = re.compile(r"[\u3040-\u30ff\u31f0-\u31ff]")
+
+# 本地大模型（Ollama）失败后的冷却秒数。
+# 上游停机时若每条标题都去撞一次，超时会被放大成「日志洪水」：
+# 2026-11-07 实测 ollama 被停后，一小时刷出 5000+ 行 WARNING，
+# json-file 的 10MB×3 上限被写满轮转，44 小时日志被丢弃，故障现场查不到。
+# 冷却期内直接走其它翻译源，省掉每条的超时等待。
+OLLAMA_FAILURE_COOLDOWN_SECONDS = 600
+
+# 翻译失败类 WARNING 的最小间隔（秒）：同一场故障风暴里只打一条
+TRANSLATION_WARN_INTERVAL_SECONDS = 60
 
 
 def _ollama_batch_size(db, config_module):
@@ -165,14 +178,49 @@ class BaiduTranslator:
             return {"error": "request_failed", "msg": str(e)}
 
 
-# Default anti-censorship domains
+# 站点官方公告的可用入口（2026-11-04 于容器内实测首页底部「永久域名 / 防屏蔽地址」）。
+# 站方每次换域名都会在首页公告，所以 `check_for_mirrors` 会自动补新域名进 DomainRouter；
+# 这里只保留启动时的起点，按官方清单排列，不写已下线的 .cyou/.bond。
+#   - www.javbus.com       永久域名（实测 200，5.6 万字节）
+#   - www.busdmm.casa      防屏蔽地址（实测 score 100，0 失败）
+#   - www.dmmsee.casa      防屏蔽地址
+#   - www.seedmm.casa      防屏蔽地址
+#   - www.busfan.casa      防屏蔽地址
+#   - www.dmmbus.casa      防屏蔽地址
+#   - www.buscdn.casa      防屏蔽地址
+#   - www.cdnbus.casa      防屏蔽地址
+#   - www.busdmm.bond      防屏蔽地址
+# 历史遗留：www.javbus.cyou / www.seejav.bond 已连续失败 212 次（TLS 握手即断），
+# 由 DomainRouter 的 dead_threshold 自动下线，不再硬编码。
+#
+# 2026-11-07 实测（生产容器内，GET /JUR-097 看有没有 gid，完整 Chrome 头）：
+#   ✅ 有 gid（真详情页）：javbus.com / busdmm.casa / dmmsee.casa / seedmm.casa /
+#      busfan.casa / dmmbus.casa / buscdn.casa / cdnbus.casa / busdmm.bond /
+#      javbus.casa / busjav.casa / seedmm.cyou / busfan.cyou
+#   ❌ 停放页（HTTP 200 + "This domain is for sale"）：**www.busdmm.cyou**
+#      它不再列进 DOMAINS；万一被 `check_for_mirrors` 从官方公告里捡回来，
+#      `page_guard.is_dead_page` 会当场把它判死（见 domain_router.record_dead_domain）。
+#   ❌ 空壳页（HTTP 200 + "welcome Loading…"）：**www.busdmm.art**
+#   ❌ TLS 握手即断：javbus.cyou / seejav.bond
+#
+# 注意：DOMAINS 不只是「首选列表」，还是 DomainRouter 的**可信清单**——
+# 只有列在这里的域名才享受「重启后无条件回到候选池」的待遇
+# （见 domain_router._load）。所以实测可用的域名必须列进来，
+# 否则它们会被历史失败计数永久排除在候选池外。
 DOMAINS = [
     "https://www.javbus.com",
-    "https://www.busdmm.cyou",
-    "https://www.busfan.cyou",
-    "https://www.javbus.cyou",
+    "https://www.busdmm.casa",
+    "https://www.dmmsee.casa",
+    "https://www.seedmm.casa",
+    "https://www.busfan.casa",
+    "https://www.dmmbus.casa",
+    "https://www.buscdn.casa",
+    "https://www.cdnbus.casa",
+    "https://www.busdmm.bond",
+    "https://www.javbus.casa",
+    "https://www.busjav.casa",
     "https://www.seedmm.cyou",
-    "https://www.seejav.bond"
+    "https://www.busfan.cyou",
 ]
 
 class JavBusScraper:
@@ -200,6 +248,15 @@ class JavBusScraper:
         self._translation_lock = threading.Lock()
         self._google_disabled_until = 0.0
         self._google_cooldown_log_at = 0.0
+        # 本地大模型（Ollama）不可用时的冷却窗口 + 日志节流。
+        # 2026-11-09 实测：ollama 被停机后，这一处 WARNING 每条标题打一次，
+        # 一小时刷出 5000+ 行，把 json-file 的 10MB×3 上限写满轮转掉，
+        # 44 小时的日志被整个丢弃 —— 故障现场根本查不到。
+        # 现在：失败即冷却 10 分钟（期间直接走其它翻译源），日志 60 秒一条。
+        self._ollama_disabled_until = 0.0
+        self._ollama_fail_log_at = 0.0
+        # Google 网页端点批量翻译失败的日志节流（同一场风暴里它也在刷屏）
+        self._google_endpoint_fail_log_at = 0.0
         # 翻译队列：一个片子一个请求，页面打开时插队到队首，历史回填排到队尾
         self._translation_queue = deque()
         self._translation_queue_lock = threading.Lock()
@@ -268,17 +325,29 @@ class JavBusScraper:
             pass
 
     def find_best_domain(self):
-        """Iterate through domains to find the FASTEST available one"""
+        """Iterate through domains to find the FASTEST **usable** one.
+
+        2026-11-07：原来这里用 HEAD 只看 ``status_code < 400``，
+        但域名停放页（``www.busdmm.cyou`` → "This domain is for sale"）
+        返回的是 200，照样被当成「可达」并且 ``record_success`` 加分，
+        于是它长期霸占候选池前列，每次抓详情都白跑一趟还拉低成功率。
+
+        改成 GET 首页并检查内容：停放页/空壳页直接判死，不再参与轮换。
+        """
         candidates = self.domain_router.candidates()
         best_domain = candidates[0] if candidates else self.all_domains[0]
         best_time = float('inf')
-        
+
         for domain in candidates:
             try:
                 start = time.time()
-                # Use HEAD request for speed, apply proxy if set
-                resp = self.session.head(domain, proxies=self.proxies, timeout=5)
+                resp = self.session.get(domain, proxies=self.proxies, timeout=8)
                 if resp.status_code < 400:
+                    if page_guard.is_dead_page(resp.text):
+                        # 域名已被挂卖 —— 永久失效，直接判死不做冷却重试
+                        self.domain_router.record_dead_domain(domain, "parked_page")
+                        logger.warning("Domain is a parked page, disabled [%s]", domain)
+                        continue
                     elapsed = time.time() - start
                     self.domain_router.record_success(domain, elapsed * 1000)
                     logger.info(f"Domain {domain} is reachable ({elapsed:.2f}s)")
@@ -286,12 +355,12 @@ class JavBusScraper:
                         best_time = elapsed
                         best_domain = domain
                         # Optimization: If very fast (<1s), just pick it
-                        if elapsed < 1.0: 
+                        if elapsed < 1.0:
                             break
             except Exception as e:
                 self.domain_router.record_failure(domain, type(e).__name__)
                 logger.warning(f"Domain {domain} failed: {type(e).__name__}")
-                
+
         logger.info(f"Selected Best Domain: {best_domain}")
         return best_domain
 
@@ -319,18 +388,26 @@ class JavBusScraper:
         """
         尝试从当前可用域名的首页解析官方发布的“防屏蔽地址”
         并将其加入到待选列表
+
+        站点会在**任意一个**可用域名的首页底部公告「永久域名 / 防屏蔽地址」，
+        所以按候选顺序逐个试，而不是只赌 base_url（它可能就是那个刚被墙掉的域名）。
         """
         try:
-            # 尝试访问当前 base_url 或 默认域名获取首页
-            target_url = self.base_url if self.base_url.startswith('http') else self.all_domains[0]
-            logger.info(f"Checking for official mirrors on {target_url}...")
-            
-            resp = self.session.get(target_url, timeout=10, proxies=self.proxies)
-            if resp.status_code != 200:
-                logger.warning(f"Failed to fetch homepage for mirror check: {resp.status_code}")
+            soup = None
+            for probe in self.domain_router.candidates()[:4]:
+                try:
+                    resp = self.session.get(probe, timeout=10, proxies=self.proxies)
+                    if resp.status_code != 200:
+                        continue
+                    soup = self.parse_html(resp)
+                    logger.info(f"Checking for official mirrors on {probe}...")
+                    break
+                except Exception:
+                    continue
+            if soup is None:
+                logger.debug("Mirror check skipped: no reachable homepage")
                 return
 
-            soup = self.parse_html(resp)
             new_domains = []
             
             # 策略1：根据用户提供的路径查找 (/html/body/div[4]/div/div[2])
@@ -363,8 +440,8 @@ class JavBusScraper:
             # 去重并添加
             count = 0
             for d in new_domains:
-                # 简单过滤非域名链接
-                if 'javbus' not in d and 'seed' not in d and 'seejav' not in d and 'bus' not in d:
+                # 简单过滤非域名链接（只要站点同族域名：javbus/bus*/seed*/seejav/dmm*）
+                if not any(key in d for key in ('javbus', 'seed', 'seejav', 'bus', 'dmm')):
                      continue
                 
                 if d not in self.all_domains:
@@ -387,26 +464,31 @@ class JavBusScraper:
         provider = db.get_config('translation_provider') or config.TRANSLATION_PROVIDER or 'google_free'
         self.provider = provider
 
+        # 占位保护（护栏）**独立于翻译源**构建 ——
+        # 兜底翻译源（百度 / Google）也必须带护栏：它们没有「艺人姓名保留日文假名」
+        # 的自觉，会把日文艺名音译成中文（实测 `いおりさん` → `伊吕波` 并已入库），
+        # 违反用户口径。护栏只在 ollama provider 下建的话，兜底路径就是裸奔的。
+        self.translation_guard = None
+        if getattr(config, 'TRANSLATION_GUARD_ENABLED', True):
+            try:
+                names = db.get_actress_names_for_translation_guard()
+                self.translation_guard = TitleGuard(names)
+                logger.info(
+                    "标题翻译占位保护已启用（演员名 %s 条）", len(names) if names else 0
+                )
+            except Exception as exc:  # noqa: BLE001
+                # 保护器取不到名字表不应让翻译整体不可用，退回无保护即可
+                logger.warning(
+                    "加载演员名失败，本次翻译不带占位保护: %s",
+                    type(exc).__name__,
+                )
+
         # 本地大模型（内网 Ollama）：翻译的首选路径，provider 选中时才启用
         self.ollama_translator = None
         if provider == 'ollama_local':
             base_url = db.get_config('ollama_base_url') or config.OLLAMA_BASE_URL
             model = db.get_config('ollama_model') or config.OLLAMA_MODEL
             if base_url and model:
-                guard = None
-                if getattr(config, 'TRANSLATION_GUARD_ENABLED', True):
-                    try:
-                        names = db.get_actress_names_for_translation_guard()
-                        guard = TitleGuard(names)
-                        logger.info(
-                            "标题翻译占位保护已启用（演员名 %s 条）", len(names) if names else 0
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        # 保护器取不到名字表不应让翻译整体不可用，退回无保护即可
-                        logger.warning(
-                            "加载演员名失败，本次翻译不带占位保护: %s",
-                            type(exc).__name__,
-                        )
                 self.ollama_translator = OllamaTranslator(
                     base_url,
                     model,
@@ -416,7 +498,7 @@ class JavBusScraper:
                     # （2026-10-11 在 hunyuan-mt-7b 上实测：6 条进、1 行出）。
                     # 逐条仍不慢——7B 单条约 0.31~0.37s，103 万条约 4 天。
                     batch_size=_ollama_batch_size(db, config),
-                    guard=guard,
+                    guard=self.translation_guard,
                     strict_quality_gate=getattr(config, 'TRANSLATION_STRICT_QUALITY_GATE', False),
                 )
                 logger.info(f"Using local Ollama Translator ({model} @ {base_url})")
@@ -451,13 +533,16 @@ class JavBusScraper:
             self.baidu_translator = None
             self.has_baidu = False
 
-    def _translate_via_google_endpoint(self, texts: List[str]) -> Dict[str, str]:
+    def _translate_via_google_endpoint(self, texts: List[str], *, keys: Optional[List[str]] = None) -> Dict[str, str]:
         """
         免费 Google 网页端点批量翻译（免 Key）。
 
         deep_translator 走的是 translate.google.com/m 端点，实测单条请求也会整体
         触发 TooManyRequests；这里换成 translate.googleapis.com 的 gtx 接口，
         用「一个 q + 换行」一次拿回整批译文，返回 {原文: 译文}（对齐不上时返回空）。
+
+        `keys` 用于**占位保护**：发出去的是保护后的文本，但返回的字典要用
+        **原文**做键（后面的 pending 索引靠原文对齐）。默认与 `texts` 相同。
         """
         if not texts:
             return {}
@@ -476,8 +561,8 @@ class JavBusScraper:
             logger.warning("Google 端点译文行数不匹配: 原文 %s 行 / 译文 %s 行", len(texts), len(lines))
             return {}
         return {
-            original: line.strip()
-            for original, line in zip(texts, lines)
+            key: line.strip()
+            for key, line in zip(keys or texts, lines)
             if line.strip()
         }
 
@@ -521,12 +606,22 @@ class JavBusScraper:
         results = [None] * len(texts)
         pending_indices_by_text = {}
         to_translate_texts = []
-        
+        # 护栏名字表（艺人名集合）：用来识别「整条标题就是艺人名」的条目
+        guard_names = getattr(getattr(self, 'translation_guard', None), 'names', None) or ()
+
         for i, text in enumerate(texts):
             if not text or not text.strip() or text.isdigit():
                 results[i] = text
                 continue
-            
+
+            # 整条标题**就是艺人名本身**（`香椎花乃` / `いおりさん`）→
+            # 正确的结果就是它自己，**根本不需要翻译**。
+            # 送进翻译链路纯属白烧一次 LLM 调用；更糟的是它会在兜底阶段被
+            # 音译成中文（实测 `いおりさん` → `伊吕波`），违反用户口径。
+            if guard_names and is_name_only_title(text, names=guard_names):
+                results[i] = text
+                continue
+
             cached = db.get_translation(text)
             if cached:
                 results[i] = normalize_simplified_title(cached, text)
@@ -569,7 +664,13 @@ class JavBusScraper:
 
             # 本地大模型优先：Ollama 并发为 1，按批串行提交，每批翻完立刻落库，
             # 避免中途超时导致整批结果全丢。
-            if getattr(self, 'ollama_translator', None) and to_translate_texts:
+            # 冷却期内直接跳过：上游不可用时再撞只是白等超时，还把日志刷爆。
+            ollama_in_cooldown = time.time() < getattr(self, '_ollama_disabled_until', 0)
+            if (
+                getattr(self, 'ollama_translator', None)
+                and to_translate_texts
+                and not ollama_in_cooldown
+            ):
                 llm_target_count = len(to_translate_texts)
                 batch_size = self.ollama_translator.batch_size
                 for start in range(0, len(to_translate_texts), batch_size):
@@ -577,16 +678,23 @@ class JavBusScraper:
                     try:
                         chunk_translations = self.ollama_translator.translate_batch(chunk)
                     except Exception as e:
-                        logger.warning(
-                            "本地大模型翻译失败: %s，回退其它翻译源",
-                            type(e).__name__,
-                        )
+                        # 上游不可用：进入冷却，别让每条标题都去撞一次超时
+                        self._ollama_disabled_until = time.time() + OLLAMA_FAILURE_COOLDOWN_SECONDS
+                        if time.time() - self._ollama_fail_log_at >= TRANSLATION_WARN_INTERVAL_SECONDS:
+                            logger.warning(
+                                "本地大模型翻译失败: %s，冷却 %s 秒内改走其它翻译源",
+                                type(e).__name__,
+                                OLLAMA_FAILURE_COOLDOWN_SECONDS,
+                            )
+                            self._ollama_fail_log_at = time.time()
                         break
                     if not chunk_translations:
-                        logger.warning(
-                            "本地大模型未给出可用译文（%s 条），改用兜底翻译源",
-                            len(chunk),
-                        )
+                        if time.time() - self._ollama_fail_log_at >= TRANSLATION_WARN_INTERVAL_SECONDS:
+                            logger.warning(
+                                "本地大模型未给出可用译文（%s 条），改用兜底翻译源",
+                                len(chunk),
+                            )
+                            self._ollama_fail_log_at = time.time()
                     for original, translated in chunk_translations.items():
                         normalized = normalize_simplified_title(translated, original)
                         # 原文照抄（模型没翻出来）不入库，留给后续再试
@@ -609,15 +717,33 @@ class JavBusScraper:
                 if not to_translate_texts:
                     return results
             
+            # 兜底翻译源（百度 / Google）**也必须带护栏** —— 它们没有「艺人姓名保留
+            # 日文假名」的自觉，会把日文艺名音译成中文（实测 `いおりさん` → `伊吕波`
+            # 并已入库，违反用户口径）。这里在整段兜底翻译**前后**套一层占位保护：
+            # 翻译源看不到名字，也就没有动机改写它 —— 和 ollama 路径用的是同一套护栏。
+            guard = getattr(self, 'translation_guard', None)
+            guard_maps: Dict[str, Dict[str, str]] = {}
+            fallback_inputs: List[str] = []
+            for text in to_translate_texts:
+                if guard is not None and guard.ready:
+                    protected, mapping = guard.protect(text)
+                    fallback_inputs.append(protected)
+                    guard_maps[text] = mapping
+                else:
+                    fallback_inputs.append(text)
+                    guard_maps[text] = {}
+            # 原文 → 保护后的文本（各翻译源都按这个映射发请求）
+            fallback_by_text = dict(zip(to_translate_texts, fallback_inputs))
+
             # 尝试通过百度翻译批量接口
             # 检查百度翻译是否被临时禁用
             baidu_disabled_until = getattr(self, '_baidu_disabled_until', 0)
             current_time = time.time()
-            
+
             if self.has_baidu and current_time >= baidu_disabled_until:
                 try:
                     # 将列表合并为多行文本，百度翻译对 \n 支持很好，能保持对应关系
-                    combined_text = "\n".join(to_translate_texts)
+                    combined_text = "\n".join(fallback_inputs)
                     
                     # 针对 54003 (QPS限制) 增加简单重试
                     translated_combined = None
@@ -643,7 +769,9 @@ class JavBusScraper:
                     
                     if translated_combined:
                         lines = translated_combined.split('\n')
-                        if len(lines) == len(to_translate_texts):
+                        # 行数按**保护后的**列表核对（发出去的就是它），
+                        # 但字典的键必须留**原文** —— 后面的 pending 索引靠原文对齐。
+                        if len(lines) == len(fallback_inputs):
                             for orig, trans in zip(to_translate_texts, lines):
                                 translated_dict[orig] = trans.strip()
                             logger.info(f"批量百度翻译成功: {len(to_translate_texts)} 个项")
@@ -659,9 +787,17 @@ class JavBusScraper:
             #     deep_translator 的端点被限流时这条路径仍可用（其自身冷却状态不影响这里）
             if remaining_texts:
                 try:
-                    translated_dict.update(self._translate_via_google_endpoint(remaining_texts))
+                    translated_dict.update(
+                        self._translate_via_google_endpoint(
+                            [fallback_by_text[t] for t in remaining_texts],
+                            keys=remaining_texts,
+                        )
+                    )
                 except Exception as e:
-                    logger.warning("Google 网页端点批量翻译失败: %s", type(e).__name__)
+                    # 同一场风暴里这条也会每批打一次，同样按最小间隔节流
+                    if time.time() - getattr(self, '_google_endpoint_fail_log_at', 0) >= TRANSLATION_WARN_INTERVAL_SECONDS:
+                        logger.warning("Google 网页端点批量翻译失败: %s", type(e).__name__)
+                        self._google_endpoint_fail_log_at = time.time()
                 remaining_texts = [t for t in remaining_texts if t not in translated_dict]
 
             if remaining_texts:
@@ -690,11 +826,13 @@ class JavBusScraper:
                             batch_size = 20
                             for i in range(0, len(remaining_texts), batch_size):
                                 batch = remaining_texts[i:i + batch_size]
+                                # 发出去的是**保护后**的文本，键仍是原文
+                                protected_batch = [fallback_by_text[t] for t in batch]
                                 try:
                                     # 增加随机延迟，避免短时间多次调用
                                     time.sleep(random.uniform(1.0, 2.0))
 
-                                    batch_results = google_translator.translate_batch(batch)
+                                    batch_results = google_translator.translate_batch(protected_batch)
 
                                     if batch_results and len(batch_results) == len(batch):
                                         for orig, trans in zip(batch, batch_results):
@@ -722,6 +860,24 @@ class JavBusScraper:
 
                     except Exception as e:
                         logger.warning("Google 翻译逻辑整体失败: %s", type(e).__name__)
+
+            # 还原占位符：翻译源有可能把 `ZZ0ZZ` 拆散或改写（多空格、丢字符）——
+            # 还原后**仍有残留**的一律丢弃这条译文（宁可没有，也不要写进脏数据）。
+            # 只处理兜底这一段产出的条目：ollama 成功的那批不在 `guard_maps` 里。
+            if guard is not None:
+                for orig, trans in list(translated_dict.items()):
+                    mapping = guard_maps.get(orig) or {}
+                    if not mapping:
+                        continue
+                    restored = guard.restore(trans, mapping)
+                    # 判据是「**艺人名必须原样回来**」，不是「占位符还在不在」——
+                    # 翻译源有可能把 `ZZ0ZZ` 拆成 `ZZ0 ZZ`，那时占位符检测不到，
+                    # 但名字已经丢了。这种译文宁可不要（宁可没有，也不要写进脏数据）。
+                    if any(name not in restored for name in mapping.values()):
+                        logger.info("兜底翻译丢失艺人名，丢弃该条译文: %s", orig[:40])
+                        translated_dict.pop(orig, None)
+                        continue
+                    translated_dict[orig] = restored
 
             # 4. 汇总结果并存入缓存
             translated_count = 0
@@ -863,35 +1019,60 @@ class JavBusScraper:
             return len(self._translation_queue)
 
     def _translation_worker_loop(self) -> None:
-        """翻译队列工作线程：一次取一个片子、发一次请求、落一次库。"""
-        attempts: Dict[str, int] = {}
-        while True:
-            title = None
-            with self._translation_queue_lock:
-                if self._translation_queue:
-                    title = self._translation_queue.popleft()
+        """翻译队列工作线程：一次取一批（默认 10 条）、发一次请求、落一次库。
 
-            if title is None:
+        之前一次只取一条 → 每个片子一次请求，103 万条积压按 1 秒/条算要跑 12 天。
+        改成整批发之后，请求数直接除以批大小。
+        """
+        attempts: Dict[str, int] = {}
+        batch_size = self._translation_batch_size()
+        while True:
+            titles = []
+            with self._translation_queue_lock:
+                while self._translation_queue and len(titles) < batch_size:
+                    titles.append(self._translation_queue.popleft())
+
+            if not titles:
                 self._translation_queue_event.wait(15)
                 self._translation_queue_event.clear()
                 continue
 
             try:
-                self.batch_translate_to_chinese([title])
-                attempts.pop(title, None)
+                self.batch_translate_to_chinese(titles)
+                for title in titles:
+                    attempts.pop(title, None)
             except Exception as e:
                 # 失败不能把片子丢掉（丢了就再也翻不出来）：重排回队列稍后重试，
                 # 连续失败 3 次才放弃，避免一条坏数据把队列卡住。
-                count = attempts.get(title, 0) + 1
-                attempts[title] = count
-                logger.warning("翻译队列执行失败(%s/3): %s", count, type(e).__name__)
-                if count < 3:
+                failed = []
+                for title in titles:
+                    count = attempts.get(title, 0) + 1
+                    attempts[title] = count
+                    if count < 3:
+                        failed.append(title)
+                    else:
+                        attempts.pop(title, None)
+                logger.warning(
+                    "翻译队列执行失败(%s/3): %s 本批 %s 条",
+                    min((attempts.get(t, 0) for t in failed), default=0),
+                    type(e).__name__,
+                    len(failed),
+                )
+                if failed:
                     time.sleep(2)
                     with self._translation_queue_lock:
-                        self._translation_queue.append(title)
+                        self._translation_queue.extend(failed)
                     self._translation_queue_event.set()
-                else:
-                    attempts.pop(title, None)
+
+    def _translation_batch_size(self) -> int:
+        """翻译批大小：跟随翻译器配置（设置项 `ollama_batch_size`），没配就退回 10。"""
+        translator = getattr(self, "ollama_translator", None)
+        size = getattr(translator, "batch_size", None) if translator else None
+        try:
+            size = int(size)
+        except (TypeError, ValueError):
+            size = 0
+        return max(1, min(size, 50))
 
     def get_navigation(self, force_refresh: bool = False) -> Dict[str, List[Dict]]:
         """
@@ -1215,15 +1396,24 @@ class JavBusScraper:
                         if res.status_code == 404 and current_source_page > 1:
                             return []
                         res.raise_for_status()
-                        lowered = res.text.lower()
-                        challenge_markers = (
-                            "just a moment",
-                            "cf-chl-",
-                            "verify you are human",
-                            "captcha",
-                        )
-                        if any(marker in lowered for marker in challenge_markers):
+                        if page_guard.is_dead_page(res.text):
+                            # 停放页：HTTP 200 但内容是 "This domain is for sale"，
+                            # 解析出来 0 个影片框，会被误判成「这一页没片子」。
+                            raise RuntimeError("dead_domain_page")
+                        if page_guard.is_challenge_page(res.text):
                             raise RuntimeError("challenge_page")
+                        if page_guard.is_age_verify_page(res.text):
+                            # 年龄验证弹窗页同样没有影片框，先尝试绕过再解析。
+                            try:
+                                self.session.post(
+                                    p_url,
+                                    data={"Submit": "確認"},
+                                    headers={"Referer": p_url, "Origin": domain},
+                                    timeout=10,
+                                )
+                                res = self.session.get(p_url, timeout=10)
+                            except Exception as exc:
+                                raise RuntimeError(f"age_verify_bypass_failed:{type(exc).__name__}")
                         boxes = self.parse_html(res).find_all('a', class_='movie-box')
                         if current_source_page == 1 and not boxes:
                             raise RuntimeError("empty_movie_page")
@@ -1250,7 +1440,11 @@ class JavBusScraper:
                     self.base_url = domain
                     break
                 except Exception as e:
-                    self.domain_router.record_failure(domain, type(e).__name__)
+                    if type(e).__name__ == "dead_domain_page":
+                        # 停放页是永久失效，不做冷却重试，直接判死
+                        self.domain_router.record_dead_domain(domain, "parked_page")
+                    else:
+                        self.domain_router.record_failure(domain, type(e).__name__)
                     logger.warning("Source domain failed, switching [%s]: %s", domain, type(e).__name__)
 
             # 所有候选域名都抓失败时（active_domain 为空）与"源站真的没有这一页"必须区分：
@@ -1391,6 +1585,409 @@ class JavBusScraper:
         token = re.sub(r"[^a-zA-Z0-9_./-]", "_", token).replace("/", "_")
         return f"movies_list_v2_javbus_{token}_p{int(page)}_l{int(limit)}"
 
+    @staticmethod
+    def _normalize_detail_path(request_path: str) -> str:
+        """把详情页路径里的影片 id 归一化成 JavBus 的路径形态。
+
+        库内 id 有三种写法混存：javbus 原生（JUFE-633）、amane 的 5 位 0 填充
+        （jur00696）、r18.dev 来源（ASBX6559）。直接拿去拼 URL 必然 404 ——
+        实测所有候选域名一起 HTTPError，看起来像「域名全挂了」，其实是路径不对。
+
+        这里只改最后一段（影片 id），保留前缀（/zh/xxx 之类）和查询串。
+        """
+        if not request_path:
+            return request_path
+        path, sep, query = request_path.partition("?")
+        path = path.rstrip("/")
+        if not path:
+            return request_path
+        segments = path.split("/")
+        last = segments[-1]
+        if not last:
+            return request_path
+        converted = javbus_path.to_javbus_path(last)
+        if converted and converted != last:
+            segments[-1] = converted
+            path = "/".join(segments)
+        return path + sep + query if sep else path
+
+    def _parse_movie_detail(
+        self,
+        response,
+        url: str,
+        domain_prefix: str,
+        *,
+        perform_translate: bool = True,
+    ) -> Dict:
+        """把一份**已确认有效**的详情页响应解析成结构化详情。
+
+        单独抽出来是为了让「换域名重试」能复用同一套解析逻辑，
+        避免两处解析代码走样。调用方必须先确认页面里有 gid。
+        """
+        response.raise_for_status()
+        soup = self.parse_html(response)
+    
+        detail = {
+            "magnets": [],
+            "info": {}
+        }
+    
+        # 提取标题
+        title_elem = soup.find('h3')
+        title = title_elem.get_text(strip=True) if title_elem else ''
+        detail['title'] = self.translate_to_chinese(title) if perform_translate else title
+        detail['original_title'] = title
+    
+        # 提取封面
+        cover_elem = soup.select_one('.bigImage img')
+        if cover_elem:
+            cover_url = cover_elem.get('src', '')
+            if cover_url and cover_url.startswith('/'):
+                cover_url = self.base_url + cover_url
+            detail['cover'] = cover_url
+        else:
+            detail['cover'] = ''
+ 
+        # 提取演员 (Stars)
+        # 兼容多种页面结构: .star-show (旧版) 和 .avatar-box (新版)
+        detail['stars'] = []
+    
+        # 策略 1: .avatar-box (常见于 newer JavBus design)
+        avatar_boxes = soup.select('.avatar-box')
+        if avatar_boxes:
+            for box in avatar_boxes:
+                star_name = box.get_text(strip=True)
+                img = box.find('img')
+                if not star_name and img:
+                    star_name = img.get('title') or img.get('alt')
+            
+                link = box.parent if box.parent.name == 'a' else box.find('a')
+                star_url = link.get('href') if link else ''
+                star_id = star_url.strip('/').split('/')[-1] if star_url else ''
+            
+                if star_name:
+                    detail['stars'].append({
+                        "name": self.translate_to_chinese(star_name) if perform_translate else star_name,
+                        "id": star_id,
+                        "url": star_url if star_url.startswith('http') else domain_prefix + (star_url if star_url.startswith('/') else '/' + star_url)
+                    })
+
+        # 策略 2: .star-show (fallback)
+        if not detail['stars']:
+            star_divs = soup.select('.star-show')
+            if star_divs:
+                for star_div in star_divs:
+                    # 优先获取纯文本 (通常在标签下)
+                    star_name = star_div.get_text(strip=True)
+                
+                    # 如果文本为空，尝试获取图片的 title 或 alt
+                    if not star_name:
+                        img = star_div.find('img')
+                        if img:
+                            star_name = img.get('title') or img.get('alt') or ''
+                
+                    # 依然为空，尝试链接的 title
+                    star_link = star_div.find('a')
+                    if not star_name and star_link:
+                         star_name = star_link.get('title') or ''
+                     
+                    star_url = star_link.get('href', '') if star_link else ''
+                    star_id = star_url.strip('/').split('/')[-1] if star_url else ''
+                
+                    if star_name: # 只添加有名字的
+                        detail['stars'].append({
+                            "name": self.translate_to_chinese(star_name) if perform_translate else star_name,
+                            "id": star_id,
+                            "url": star_url if star_url.startswith('http') else domain_prefix + (star_url if star_url.startswith('/') else '/' + star_url)
+                        })
+    
+        # 策略 3: 基于文本查找 (最粗暴的兜底)
+        # 有些页面结构混乱，直接找 "演員" / "出演" 后面的链接
+        if not detail['stars']:
+             try:
+                 # 查找包含特定文本的 header
+                 keywords = ["演員", "出演", "出演者", "Cast", "Stars"]
+                 star_header = soup.find(lambda t: t.name in ["span", "p", "div"] and any(k in t.text for k in keywords) and len(t.text) < 20)
+             
+                 if star_header:
+                     # 1. 尝试在父级段落中找链接
+                     parent = star_header.parent
+                     if parent:
+                         links = parent.find_all('a')
+                     
+                         # 如果父级没找到，或者是顶级元素，尝试查找后续兄弟元素
+                         if not links or len(links) <= 1: # <=1 是防止只有 header 自己的链接
+                             next_sibling = parent.find_next_sibling()
+                             if next_sibling:
+                                 links = next_sibling.find_all('a')
+                     
+                         for a in links:
+                             name = a.get_text(strip=True)
+                             href = a.get('href', '')
+                             if name and href and ('/star/' in href or '/uncensored/star/' in href):
+                                 detail['stars'].append({
+                                     "name": self.translate_to_chinese(name) if perform_translate else name,
+                                     "id": href.strip('/').split('/')[-1],
+                                     "url": href if href.startswith('http') else domain_prefix + href
+                                 })
+             except Exception as e:
+                 logger.warning(f"Strategy 3 actor extraction failed: {e}")
+
+        # 去重
+        seen_stars = set()
+        unique_stars = []
+        for s in detail['stars']:
+            if s['id'] not in seen_stars:
+                seen_stars.add(s['id'])
+                unique_stars.append(s)
+        detail['stars'] = unique_stars
+
+        # 提取基本信息
+        info_div = soup.find('div', class_='info')
+        if info_div:
+            for p in info_div.find_all('p'):
+                # 尝试寻找 header span (更精确)
+                header = p.find('span', class_='header')
+                if header:
+                    key = header.get_text(strip=True).rstrip(':')
+                    # Value 是 header 之后的所有内容
+                    # 移除 header 自身，获取剩余 text
+                    # 但不能直接 modify p，所以复制 logic
+                    value_parts = []
+                    for sibling in header.next_siblings:
+                        if hasattr(sibling, 'get_text'):
+                            value_parts.append(sibling.get_text(strip=True))
+                        elif isinstance(sibling, str):
+                            value_parts.append(sibling.strip())
+                    value = " ".join([v for v in value_parts if v])
+                else:
+                    # Fallback: 简单的文本分割
+                    text = p.get_text(strip=True)
+                    if ':' in text:
+                        key, value = text.split(':', 1)
+                    else:
+                        continue
+
+                key = key.strip()
+                if not key: continue
+
+                # 翻译键名 (如 "識別碼", "發行日期", "導演", "製作商", "發行商", "系列")
+                translated_key = self.translate_to_chinese(key) if perform_translate else key
+            
+                # 对于演员/制作商等值，如果不是中文也尝试翻译
+                translated_value = value.strip()
+            
+                # 如果包含日文假名，尝试翻译 (针对 "メーカー" (Manufacturer), "レーベル" (Label) 等值的翻译)
+                # 注意: 系列、制作商 通常是链接，前面已经提取了文本
+                if perform_translate and re.search(r'[\u3040-\u309f\u30a0-\u30ff]', translated_value):
+                     translated_value = self.translate_to_chinese(translated_value)
+                 
+                detail['info'][translated_key] = translated_value
+    
+        # 提取类型标签 (Genres)
+        # 提取类型标签 (Genres)
+        detail['genres'] = []
+        # 策略 1: 标准 CSS Selector
+        genre_elements = soup.select('.genre a, p.header + p a[href*="/genre/"]')
+    
+        # 策略 2: 基于文本的 Header 查找 (针对不规范页面)
+        if not genre_elements:
+             try:
+                 keywords = ["類別", "类别", "Genre", "Category"]
+                 genre_header = soup.find(lambda t: t.name in ["span", "p"] and any(k in t.text for k in keywords) and len(t.text) < 20)
+                 if genre_header:
+                     parent = genre_header.parent
+                     if parent:
+                         # 查找父元素下所有指向 /genre/ 的链接
+                         links = parent.find_all('a', href=re.compile(r'/genre/'))
+                         # 如果父元素没找到，找兄弟元素
+                         if not links:
+                             next_p = parent.find_next_sibling('p')
+                             if next_p:
+                                 links = next_p.find_all('a', href=re.compile(r'/genre/'))
+                     
+                         if links:
+                             genre_elements = links
+             except:
+                 pass
+
+        if genre_elements:
+            genres_list = []
+            genre_texts = [] # 仅用于批量翻译
+        
+            for g in genre_elements:
+                text = g.get_text(strip=True)
+                href = g.get('href', '')
+                # 提取 ID (例如 /genre/4g -> 4g)
+                g_id = href.strip('/').split('/')[-1] if href else ''
+            
+                if text and g_id:
+                     genres_list.append({"name": text, "id": g_id})
+                     genre_texts.append(text)
+        
+            # 批量翻译
+            if perform_translate and genre_texts:
+                translated_texts = self.batch_translate_to_chinese(genre_texts)
+                # 将翻译结果回填
+                for i, g_obj in enumerate(genres_list):
+                    if i < len(translated_texts):
+                        g_obj['name'] = translated_texts[i]
+        
+            # 去重 (按 ID)
+            seen_ids = set()
+            unique_genres = []
+            for g in genres_list:
+                if g['id'] not in seen_ids:
+                    seen_ids.add(g['id'])
+                    unique_genres.append(g)
+                
+            detail['genres'] = unique_genres # 返回对象列表
+        else:
+             detail['genres'] = []
+    
+        # 提取磁力链接 - JavBus 的磁力链接通过 Ajax 加载，需要特定的 gid 和 uc 变量
+        try:
+            # 尝试多种策略寻找 gid
+            gid_match = re.search(r'var gid = (\d+);', response.text)
+            if not gid_match:
+                gid_match = re.search(r'gid\s*=\s*(\d+)', response.text)
+        
+            uc_match = re.search(r'var uc = (\d+);', response.text)
+            img_match = re.search(r'var img = [\'"](.+?)[\'"];', response.text)
+        
+            if gid_match:
+                gid = gid_match.group(1)
+                uc = uc_match.group(1) if uc_match else "0"
+                img = img_match.group(1) if img_match else ""
+            
+                # 关键：增加 floor 模拟及 Referer，这是 Ajax 校验的核心
+                # 使用 domain_prefix 而非 self.base_url，确保 AJAX 域名一致
+                ajax_url = f"{domain_prefix}/ajax/uncledatoolsbyajax.php?gid={gid}&lang=zh&img={img}&uc={uc}&floor={random.randint(100, 999)}"
+                ajax_headers = {
+                    "Referer": url,
+                    "X-Requested-With": "XMLHttpRequest"
+                }
+            
+                # 发起 AJAX 请求
+                ajax_response = self.session.get(ajax_url, headers=ajax_headers, timeout=10)
+                ajax_soup = self.parse_html(ajax_response)
+                logger.info(f"成功获取磁力 AJAX，长度: {len(ajax_response.text)}")
+            else:
+                logger.warning(f"无法在页面中识别出 gid: {url}")
+                ajax_soup = BeautifulSoup("", 'html.parser')
+        
+            # 解析磁力链接表格
+            for tr in ajax_soup.find_all('tr'):
+                tds = tr.find_all('td')
+                if len(tds) >= 3:
+                    link_td = tds[0]
+                    size_td = tds[1]
+                    date_td = tds[2]
+                
+                    magnet_link = link_td.find('a')
+                    if magnet_link:
+                        magnet_url = magnet_link.get('href', '')
+                        m_title = magnet_link.get_text(strip=True)
+                        size = size_td.get_text(strip=True)
+                        date = date_td.get_text(strip=True)
+                    
+                        # 解析磁力链接信息
+                        magnet_info = self._parse_magnet_info(m_title, size, magnet_url)
+                        magnet_info['date'] = date
+                    
+                        detail['magnets'].append(magnet_info)
+        
+            # detail['magnets'] = magnets # already done in loop
+        except Exception as e:
+            logger.error(f"提取磁力链接解析过程中出错: {e}")
+
+        # 剧照功能已删除
+
+        # 保存详情到数据库 (更新现有电影)
+        movie_id = url.split('/')[-1]
+        db_movie = {
+            "id": movie_id,
+            "detail": detail
+        }
+        if detail.get('title'):
+            db_movie['title'] = detail['title']
+        if detail.get('cover'):
+            db_movie['cover'] = detail['cover']
+        
+        db.save_movie(db_movie)
+    
+        return detail
+
+
+    def _get_movie_detail_with_fallback(
+        self,
+        request_path: str,
+        *,
+        exclude: Optional[str] = None,
+        perform_translate: bool = True,
+    ) -> Dict:
+        """换掉刚失败的那个域名再抓一次详情。
+
+        2026-11-07：候选域名里混进了停放页（``www.busdmm.cyou`` 返回
+        "This domain is for sale"），它 HTTP 200 却被当成成功页，
+        于是详情页永远拿到一份没有 gid 的占位内容。这里换域名重试，
+        最多再试一轮，避免整条抓取链路被一个坏域名拖死。
+        """
+        tried = []
+        # 路径归一化：库内 id（jur00696 / ASBX6559…）直接拼 URL 必然 404。
+        request_path = self._normalize_detail_path(request_path)
+        for candidate in self.domain_router.candidates():
+            if exclude and candidate == exclude:
+                continue
+            candidate_url = f"{candidate}{request_path}"
+            tried.append(candidate)
+            try:
+                candidate_response = self.session.get(candidate_url, timeout=15)
+                candidate_response.raise_for_status()
+                if page_guard.is_dead_page(candidate_response.text):
+                    self.domain_router.record_dead_domain(candidate, "parked_page")
+                    # 判死后不能再落到下面的 record_failure：
+                    # 那会把 last_failure_reason 从 dead_domain:parked_page
+                    # 冲成 RuntimeError，存量状态就再也认不出这是停放页
+                    # （v2.03 起 dead_page 标记会随状态持久化，但 reason
+                    #   仍是存量反推 dead_page 的依据，不能被覆盖）。
+                    logger.warning(
+                        "详情页域名已判死（停放页），跳过 [%s]", candidate
+                    )
+                    continue
+                if page_guard.is_challenge_page(candidate_response.text):
+                    raise RuntimeError("challenge_page")
+                if page_guard.is_age_verify_page(candidate_response.text):
+                    self.session.post(
+                        candidate_url,
+                        data={"Submit": "確認"},
+                        headers={"Referer": candidate_url, "Origin": candidate},
+                        timeout=10,
+                    )
+                    candidate_response = self.session.get(candidate_url, timeout=15)
+                if not page_guard.has_gid(candidate_response.text):
+                    raise RuntimeError("invalid_detail_page")
+                self.domain_router.record_success(candidate, 0.0)
+                self.base_url = candidate
+                return self._parse_movie_detail(
+                    candidate_response,
+                    candidate_url,
+                    candidate,
+                    perform_translate=perform_translate,
+                )
+            except Exception as exc:
+                self.domain_router.record_failure(candidate, type(exc).__name__)
+                logger.warning(
+                    "详情页备用域名失败 [%s]: %s (url=%s)",
+                    candidate,
+                    type(exc).__name__,
+                    candidate_url,
+                )
+
+        logger.warning("所有候选域名都取不到有效详情页: %s", request_path)
+        cached_detail = self._cached_movie_detail(request_path.rsplit("/", 1)[-1])
+        return cached_detail or {"magnets": [], "info": {}, "title": "", "original_title": ""}
+
     def get_movie_detail(self, url: str, perform_translate: bool = True) -> Dict:
         """
         获取电影详情和磁力链接
@@ -1401,6 +1998,11 @@ class JavBusScraper:
             request_path = parsed_input.path or "/"
             if parsed_input.query:
                 request_path += f"?{parsed_input.query}"
+            # 路径归一化：库内 id 有三种写法（JUFE-633 / jur00696 / ASBX6559），
+            # 直接拿它拼 URL 必然 404（实测所有域名全 HTTPError）。
+            # 这里统一转成 JavBus 的路径形态，是所有调用方的收口点 ——
+            # force_sync 之类直接传 f"/{movie_id}" 的调用方也在这里被兜住。
+            request_path = self._normalize_detail_path(request_path)
             response = None
             active_url = url
             domain_prefix = f"{parsed_input.scheme}://{parsed_input.netloc}"
@@ -1411,11 +2013,18 @@ class JavBusScraper:
                     started_at = time.time()
                     candidate_response = self.session.get(candidate_url, timeout=15)
                     candidate_response.raise_for_status()
-                    lowered = candidate_response.text.lower()
-                    if any(
-                        marker in lowered
-                        for marker in ("just a moment", "cf-chl-", "verify you are human", "captcha")
-                    ):
+                    if page_guard.is_dead_page(candidate_response.text):
+                        # 域名停放页 / 空壳页：HTTP 200 但根本不是影片页。
+                        # 当成成功会把这个域名长期留在候选池里，每次抓详情都白跑。
+                        self.domain_router.record_dead_domain(candidate, "parked_page")
+                        # 判死后不要再落到 except 里的 record_failure：
+                        # 那会把 last_failure_reason 冲掉，存量状态就认不出
+                        # 这是停放页了（reason 是 dead_page 的反推依据）。
+                        logger.warning(
+                            "详情页域名已判死（停放页），跳过 [%s]", candidate
+                        )
+                        continue
+                    if page_guard.is_challenge_page(candidate_response.text):
                         raise RuntimeError("challenge_page")
                     response = candidate_response
                     active_url = candidate_url
@@ -1429,9 +2038,10 @@ class JavBusScraper:
                 except Exception as exc:
                     self.domain_router.record_failure(candidate, type(exc).__name__)
                     logger.warning(
-                        "详情页域名失败，切换备用域名 [%s]: %s",
+                        "详情页域名失败，切换备用域名 [%s]: %s (url=%s)",
                         candidate,
                         type(exc).__name__,
+                        candidate_url,
                     )
 
             if response is None:
@@ -1441,313 +2051,53 @@ class JavBusScraper:
                 return cached_detail or {"magnets": [], "info": {}, "title": "", "original_title": ""}
 
             url = active_url
-            
-            # 检查年龄验证 (Simple Modal)
-            if 'id="ageVerify"' in response.text or 'name="Submit"' in response.text:
-                 logger.info("检测到年龄验证弹窗，尝试通过 POST 绕过...")
-                 try:
-                     self.session.post(url, data={"Submit": "確認"}, timeout=10)
-                     # POST 后页面通常会重定向或直接返回内容，再次 GET 确认
-                     response = self.session.get(url, timeout=15)
-                 except Exception as e:
-                     logger.warning(f"年龄验证绕过失败: {e}")
+
+            # 年龄验证（JavBus 自家的「你是否已經成年?」弹窗）。
+            # 2026-11-07 实测：只要请求头是完整 Chrome 头就直接放行；
+            # 缺头（如只带 UA）才会被弹这个窗。弹窗页里没有 `var gid`，
+            # 直接往下走就会报「无法在页面中识别出 gid」。
+            if page_guard.is_age_verify_page(response.text):
+                logger.info("检测到年龄验证弹窗，尝试通过 POST 绕过...")
+                try:
+                    # 表单是 method=post action=""，字段名 Submit、值「確認」。
+                    # 必须带 Referer/Origin，否则会被重定向到 /doc/driver-verify。
+                    self.session.post(
+                        url,
+                        data={"Submit": "確認"},
+                        headers={"Referer": url, "Origin": domain_prefix},
+                        timeout=10,
+                    )
+                    # POST 后页面通常会重定向或直接返回内容，再次 GET 确认
+                    response = self.session.get(url, timeout=15)
+                except Exception as e:
+                    logger.warning(f"年龄验证绕过失败: {e}")
 
             if "driver-verify" in response.url:
                 logger.warning("重定向到了复杂的驾驶员验证页面，可能无法自动绕过。")
-            
-            response.raise_for_status()
-            soup = self.parse_html(response)
-            
-            detail = {
-                "magnets": [],
-                "info": {}
-            }
-            
-            # 提取标题
-            title_elem = soup.find('h3')
-            title = title_elem.get_text(strip=True) if title_elem else ''
-            detail['title'] = self.translate_to_chinese(title) if perform_translate else title
-            detail['original_title'] = title
-            
-            # 提取封面
-            cover_elem = soup.select_one('.bigImage img')
-            if cover_elem:
-                cover_url = cover_elem.get('src', '')
-                if cover_url and cover_url.startswith('/'):
-                    cover_url = self.base_url + cover_url
-                detail['cover'] = cover_url
-            else:
-                detail['cover'] = ''
- 
-            # 提取演员 (Stars)
-            # 兼容多种页面结构: .star-show (旧版) 和 .avatar-box (新版)
-            detail['stars'] = []
-            
-            # 策略 1: .avatar-box (常见于 newer JavBus design)
-            avatar_boxes = soup.select('.avatar-box')
-            if avatar_boxes:
-                for box in avatar_boxes:
-                    star_name = box.get_text(strip=True)
-                    img = box.find('img')
-                    if not star_name and img:
-                        star_name = img.get('title') or img.get('alt')
-                    
-                    link = box.parent if box.parent.name == 'a' else box.find('a')
-                    star_url = link.get('href') if link else ''
-                    star_id = star_url.strip('/').split('/')[-1] if star_url else ''
-                    
-                    if star_name:
-                        detail['stars'].append({
-                            "name": self.translate_to_chinese(star_name) if perform_translate else star_name,
-                            "id": star_id,
-                            "url": star_url if star_url.startswith('http') else domain_prefix + (star_url if star_url.startswith('/') else '/' + star_url)
-                        })
 
-            # 策略 2: .star-show (fallback)
-            if not detail['stars']:
-                star_divs = soup.select('.star-show')
-                if star_divs:
-                    for star_div in star_divs:
-                        # 优先获取纯文本 (通常在标签下)
-                        star_name = star_div.get_text(strip=True)
-                        
-                        # 如果文本为空，尝试获取图片的 title 或 alt
-                        if not star_name:
-                            img = star_div.find('img')
-                            if img:
-                                star_name = img.get('title') or img.get('alt') or ''
-                        
-                        # 依然为空，尝试链接的 title
-                        star_link = star_div.find('a')
-                        if not star_name and star_link:
-                             star_name = star_link.get('title') or ''
-                             
-                        star_url = star_link.get('href', '') if star_link else ''
-                        star_id = star_url.strip('/').split('/')[-1] if star_url else ''
-                        
-                        if star_name: # 只添加有名字的
-                            detail['stars'].append({
-                                "name": self.translate_to_chinese(star_name) if perform_translate else star_name,
-                                "id": star_id,
-                                "url": star_url if star_url.startswith('http') else domain_prefix + (star_url if star_url.startswith('/') else '/' + star_url)
-                            })
-            
-            # 策略 3: 基于文本查找 (最粗暴的兜底)
-            # 有些页面结构混乱，直接找 "演員" / "出演" 后面的链接
-            if not detail['stars']:
-                 try:
-                     # 查找包含特定文本的 header
-                     keywords = ["演員", "出演", "出演者", "Cast", "Stars"]
-                     star_header = soup.find(lambda t: t.name in ["span", "p", "div"] and any(k in t.text for k in keywords) and len(t.text) < 20)
-                     
-                     if star_header:
-                         # 1. 尝试在父级段落中找链接
-                         parent = star_header.parent
-                         if parent:
-                             links = parent.find_all('a')
-                             
-                             # 如果父级没找到，或者是顶级元素，尝试查找后续兄弟元素
-                             if not links or len(links) <= 1: # <=1 是防止只有 header 自己的链接
-                                 next_sibling = parent.find_next_sibling()
-                                 if next_sibling:
-                                     links = next_sibling.find_all('a')
-                             
-                             for a in links:
-                                 name = a.get_text(strip=True)
-                                 href = a.get('href', '')
-                                 if name and href and ('/star/' in href or '/uncensored/star/' in href):
-                                     detail['stars'].append({
-                                         "name": self.translate_to_chinese(name) if perform_translate else name,
-                                         "id": href.strip('/').split('/')[-1],
-                                         "url": href if href.startswith('http') else domain_prefix + href
-                                     })
-                 except Exception as e:
-                     logger.warning(f"Strategy 3 actor extraction failed: {e}")
+            # 绕过之后仍可能是拦截页；这种情况下这份响应没有 gid，
+            # 当成详情页往下走只会产出「无法在页面中识别出 gid」的噪音日志。
+            # 这里换用下一个域名重试一遍，而不是拿一份拦截页当详情。
+            if not page_guard.has_gid(response.text):
+                page_kind = page_guard.describe_page(response.text)
+                logger.warning(
+                    "详情页未取到有效内容（%s），换域名重试: %s",
+                    page_kind,
+                    domain_prefix,
+                )
+                self.domain_router.record_failure(domain_prefix, f"invalid_detail_page:{page_kind}")
+                return self._get_movie_detail_with_fallback(
+                    request_path,
+                    exclude=domain_prefix,
+                    perform_translate=perform_translate,
+                )
 
-            # 去重
-            seen_stars = set()
-            unique_stars = []
-            for s in detail['stars']:
-                if s['id'] not in seen_stars:
-                    seen_stars.add(s['id'])
-                    unique_stars.append(s)
-            detail['stars'] = unique_stars
-
-            # 提取基本信息
-            info_div = soup.find('div', class_='info')
-            if info_div:
-                for p in info_div.find_all('p'):
-                    # 尝试寻找 header span (更精确)
-                    header = p.find('span', class_='header')
-                    if header:
-                        key = header.get_text(strip=True).rstrip(':')
-                        # Value 是 header 之后的所有内容
-                        # 移除 header 自身，获取剩余 text
-                        # 但不能直接 modify p，所以复制 logic
-                        value_parts = []
-                        for sibling in header.next_siblings:
-                            if hasattr(sibling, 'get_text'):
-                                value_parts.append(sibling.get_text(strip=True))
-                            elif isinstance(sibling, str):
-                                value_parts.append(sibling.strip())
-                        value = " ".join([v for v in value_parts if v])
-                    else:
-                        # Fallback: 简单的文本分割
-                        text = p.get_text(strip=True)
-                        if ':' in text:
-                            key, value = text.split(':', 1)
-                        else:
-                            continue
-
-                    key = key.strip()
-                    if not key: continue
-
-                    # 翻译键名 (如 "識別碼", "發行日期", "導演", "製作商", "發行商", "系列")
-                    translated_key = self.translate_to_chinese(key) if perform_translate else key
-                    
-                    # 对于演员/制作商等值，如果不是中文也尝试翻译
-                    translated_value = value.strip()
-                    
-                    # 如果包含日文假名，尝试翻译 (针对 "メーカー" (Manufacturer), "レーベル" (Label) 等值的翻译)
-                    # 注意: 系列、制作商 通常是链接，前面已经提取了文本
-                    if perform_translate and re.search(r'[\u3040-\u309f\u30a0-\u30ff]', translated_value):
-                         translated_value = self.translate_to_chinese(translated_value)
-                         
-                    detail['info'][translated_key] = translated_value
-            
-            # 提取类型标签 (Genres)
-            # 提取类型标签 (Genres)
-            detail['genres'] = []
-            # 策略 1: 标准 CSS Selector
-            genre_elements = soup.select('.genre a, p.header + p a[href*="/genre/"]')
-            
-            # 策略 2: 基于文本的 Header 查找 (针对不规范页面)
-            if not genre_elements:
-                 try:
-                     keywords = ["類別", "类别", "Genre", "Category"]
-                     genre_header = soup.find(lambda t: t.name in ["span", "p"] and any(k in t.text for k in keywords) and len(t.text) < 20)
-                     if genre_header:
-                         parent = genre_header.parent
-                         if parent:
-                             # 查找父元素下所有指向 /genre/ 的链接
-                             links = parent.find_all('a', href=re.compile(r'/genre/'))
-                             # 如果父元素没找到，找兄弟元素
-                             if not links:
-                                 next_p = parent.find_next_sibling('p')
-                                 if next_p:
-                                     links = next_p.find_all('a', href=re.compile(r'/genre/'))
-                             
-                             if links:
-                                 genre_elements = links
-                 except:
-                     pass
-
-            if genre_elements:
-                genres_list = []
-                genre_texts = [] # 仅用于批量翻译
-                
-                for g in genre_elements:
-                    text = g.get_text(strip=True)
-                    href = g.get('href', '')
-                    # 提取 ID (例如 /genre/4g -> 4g)
-                    g_id = href.strip('/').split('/')[-1] if href else ''
-                    
-                    if text and g_id:
-                         genres_list.append({"name": text, "id": g_id})
-                         genre_texts.append(text)
-                
-                # 批量翻译
-                if perform_translate and genre_texts:
-                    translated_texts = self.batch_translate_to_chinese(genre_texts)
-                    # 将翻译结果回填
-                    for i, g_obj in enumerate(genres_list):
-                        if i < len(translated_texts):
-                            g_obj['name'] = translated_texts[i]
-                
-                # 去重 (按 ID)
-                seen_ids = set()
-                unique_genres = []
-                for g in genres_list:
-                    if g['id'] not in seen_ids:
-                        seen_ids.add(g['id'])
-                        unique_genres.append(g)
-                        
-                detail['genres'] = unique_genres # 返回对象列表
-            else:
-                 detail['genres'] = []
-            
-            # 提取磁力链接 - JavBus 的磁力链接通过 Ajax 加载，需要特定的 gid 和 uc 变量
-            try:
-                # 尝试多种策略寻找 gid
-                gid_match = re.search(r'var gid = (\d+);', response.text)
-                if not gid_match:
-                    gid_match = re.search(r'gid\s*=\s*(\d+)', response.text)
-                
-                uc_match = re.search(r'var uc = (\d+);', response.text)
-                img_match = re.search(r'var img = [\'"](.+?)[\'"];', response.text)
-                
-                if gid_match:
-                    gid = gid_match.group(1)
-                    uc = uc_match.group(1) if uc_match else "0"
-                    img = img_match.group(1) if img_match else ""
-                    
-                    # 关键：增加 floor 模拟及 Referer，这是 Ajax 校验的核心
-                    # 使用 domain_prefix 而非 self.base_url，确保 AJAX 域名一致
-                    ajax_url = f"{domain_prefix}/ajax/uncledatoolsbyajax.php?gid={gid}&lang=zh&img={img}&uc={uc}&floor={random.randint(100, 999)}"
-                    ajax_headers = {
-                        "Referer": url,
-                        "X-Requested-With": "XMLHttpRequest"
-                    }
-                    
-                    # 发起 AJAX 请求
-                    ajax_response = self.session.get(ajax_url, headers=ajax_headers, timeout=10)
-                    ajax_soup = self.parse_html(ajax_response)
-                    logger.info(f"成功获取磁力 AJAX，长度: {len(ajax_response.text)}")
-                else:
-                    logger.warning(f"无法在页面中识别出 gid: {url}")
-                    ajax_soup = BeautifulSoup("", 'html.parser')
-                
-                # 解析磁力链接表格
-                for tr in ajax_soup.find_all('tr'):
-                    tds = tr.find_all('td')
-                    if len(tds) >= 3:
-                        link_td = tds[0]
-                        size_td = tds[1]
-                        date_td = tds[2]
-                        
-                        magnet_link = link_td.find('a')
-                        if magnet_link:
-                            magnet_url = magnet_link.get('href', '')
-                            m_title = magnet_link.get_text(strip=True)
-                            size = size_td.get_text(strip=True)
-                            date = date_td.get_text(strip=True)
-                            
-                            # 解析磁力链接信息
-                            magnet_info = self._parse_magnet_info(m_title, size, magnet_url)
-                            magnet_info['date'] = date
-                            
-                            detail['magnets'].append(magnet_info)
-                
-                # detail['magnets'] = magnets # already done in loop
-            except Exception as e:
-                logger.error(f"提取磁力链接解析过程中出错: {e}")
-
-            # 剧照功能已删除
-
-            # 保存详情到数据库 (更新现有电影)
-            movie_id = url.split('/')[-1]
-            db_movie = {
-                "id": movie_id,
-                "detail": detail
-            }
-            if detail.get('title'):
-                db_movie['title'] = detail['title']
-            if detail.get('cover'):
-                db_movie['cover'] = detail['cover']
-                
-            db.save_movie(db_movie)
-            
-            return detail
+            return self._parse_movie_detail(
+                response,
+                url,
+                domain_prefix,
+                perform_translate=perform_translate,
+            )
         
         except Exception as e:
             logger.error(f"捕获电影详情出错: {e}")
@@ -1911,16 +2261,33 @@ class JavBusScraper:
             "size_bytes": self._parse_size_to_bytes(size)
         }
         
-        # 检测分辨率
+        # 检测分辨率。
+        #
+        # ⚠️ 顺序不能乱：先判「显式低清标记」再判「高清」类标记，
+        # 否则 `XXX-HD高清`（HD=720P + 高清=泛称）会被当成 1080P。
+        # ⚠️ 也不能用 `'HD' in title` 这种裸子串 —— `HD` 会命中
+        # `FullHD`(其实是1080P)、`HDPVR`、`SD`(含 D) 等等，
+        # 实测生产库里 798 条标成 720P 的磁力里 **786 条**只是靠这个子串撞上的。
+        # 这里改成**带词边界的正则**：只有独立的 `HD` / `FHD` / `UHD` 等记号才算数。
         title_upper = title.upper()
-        if '4K' in title_upper or '2160P' in title_upper:
+        if re.search(r'(?<![A-Z0-9])(4K|2160P|UHD)(?![A-Z0-9])', title_upper):
             info['resolution'] = '4K'
-        elif '1080P' in title_upper or 'FHD' in title_upper:
+        elif re.search(r'(?<![A-Z0-9])(1080P?|FHD|FULLHD)(?![A-Z0-9])', title_upper):
             info['resolution'] = '1080P'
-        elif '720P' in title_upper or 'HD' in title_upper:
+        elif re.search(r'(?<![A-Z0-9])(720P?|HD)(?![A-Z0-9])', title_upper):
             info['resolution'] = '720P'
-        elif '480P' in title_upper or 'SD' in title_upper:
+        elif re.search(r'(?<![A-Z0-9])(480P?|SD)(?![A-Z0-9])', title_upper):
             info['resolution'] = '480P'
+        elif '超清' in title or '蓝光' in title or '超高清' in title:
+            # 中文站点常用的「超清/蓝光」= 高于 1080P，但具体档位不可知 → 归 4K 组
+            info['resolution'] = '4K'
+        elif '高清' in title or '高畫質' in title or '高画质' in title:
+            # ⚠️ 「高清」在中文种子名里是**泛称**（常常就是 1080P），
+            # 不能因为它比 720P 好就一律判 1080P —— 实测同一个号里
+            # `AVOP-069.mkv高清`(4.96GB) 与 `AVOP-069.HD高清`(3.92GB) 并存，
+            # 判成 1080P 会让选种把两者混在一组里。这里保守判 720P，
+            # 让它们和「明确标 HD 的」同组，靠体积大小决胜（后者更大）。
+            info['resolution'] = '720P'
         
         # 检测字幕
         subtitle_keywords = ['字幕', 'SUB', 'subtitle', '中文', 'CH', 'CHS']
@@ -1956,36 +2323,86 @@ class JavBusScraper:
         except:
             return 0
 
+    def _refresh_magnet_metadata(self, magnets: List[Dict]) -> List[Dict]:
+        """用当前解析规则重算每条磁力的标注（原地覆盖缓存里的旧值）。
+
+        v2.19 修好了 ``_parse_magnet_info()``，但库里存量磁力仍是旧解析结果：
+        2026-11-11 生产体检 24,188 条磁力里 **19,713 条（81.5%）resolution 为 NULL**，
+        其中 6,680 条标题明确带「高清/蓝光/4K」。``/api/magnets/select`` 与
+        ``/api/detail`` 都是缓存优先，旧标注会继续参与分组，等于修复只对新抓的生效。
+
+        这里在**选种入口**统一重算，让存量数据和未来写入的旧标注都自动修正，
+        不必批量改 145 万行的 JSONB。原地改而非生成副本，是为了让
+        ``select_alive_magnet()`` 里 ``m is not preferred`` 的对象引用仍然成立。
+
+        ``size_bytes`` 只在能解析出非零值时覆盖，避免把缓存里已有的体积抹成 0
+        （少数条目的 ``size`` 文本为空但体积已存好）。
+        """
+        for magnet in magnets or []:
+            if not isinstance(magnet, dict):
+                continue
+            parsed = self._parse_magnet_info(
+                str(magnet.get("title") or ""),
+                str(magnet.get("size") or ""),
+                str(magnet.get("magnet") or ""),
+            )
+            magnet["resolution"] = parsed["resolution"]
+            magnet["has_subtitle"] = parsed["has_subtitle"]
+            if parsed["size_bytes"]:
+                magnet["size_bytes"] = parsed["size_bytes"]
+        return magnets
+
     def select_best_magnet(self, magnets: List[Dict], preference: str = '1080P') -> Optional[Dict]:
         """
         根据用户偏好智能选择最佳磁力链接
-        
+
         优先级：
         1. 匹配用户偏好的分辨率
         2. 同分辨率下优先选择有字幕的
-        3. 无字幕时选择文件最小的
+        3. 无字幕时选择文件最大的
+
+        ⚠️ **未标注分辨率的候选不能被「有标注组」压制**（2026-11-11 实测）：
+        JavBus 的磁力表里绝大多数标题根本没写分辨率（生产实测 23912 条磁力中
+        **21661 条 resolution 为 NULL**，占 90.6%），其中大量是「AVOP-069.mkv高清」
+        这种**体积更大**的版本。旧实现只要看见一个标了 720P 的候选就锁定那一组，
+        于是「3.92GB 的 720P」赢过「4.96GB 的高清版」——
+        而前者恰恰是**做种最少、根本下不动**的那个。
+        现在：未标注的候选归入「未知组」，与已知分辨率组**同池竞争**，
+        靠体积（+做种数）决胜。
         """
         if not magnets:
             return None
-        
-        # 按分辨率分组
+
+        # 缓存里的标注可能是 v2.19 之前的旧解析结果（生产 81.5% 为 NULL），
+        # 选种前统一按当前规则重算，否则修复只对新抓的磁力生效。
+        magnets = self._refresh_magnet_metadata(magnets)
+
+        # 按分辨率分组（未标注 → 归入「未知组」，键统一用 'Unknown'）
         resolution_groups = {}
         for magnet in magnets:
-            res = magnet.get('resolution', 'Unknown')
+            res = magnet.get('resolution') or 'Unknown'
             if res not in resolution_groups:
                 resolution_groups[res] = []
             resolution_groups[res].append(magnet)
-        
+
         # 获取目标分辨率组
         target_group = resolution_groups.get(preference, [])
-        
-        # 如果没有找到偏好分辨率，尝试降级
+
+        # 如果没有找到偏好分辨率，尝试降级。
+        # ⚠️ **未标注组必须同池参与**：绝大多数片子的候选根本没分辨率标注
+        #（生产实测 23912 条磁力里 21661 条 resolution 为 NULL），
+        # 若只按 ['1080P','720P','4K','480P'] 取第一个命中的组就锁定，
+        # 就会跳过体积更大的未标注候选 —— 实测 AVOP-069 就是这样
+        # 选了 3.92GB 的 720P 而放过 4.96GB 的高清版。
+        # 现在：把可降级的组和未标注组**合并成一个池**，按体积决胜。
         if not target_group:
-            fallback_order = ['1080P', '720P', '4K', '480P']
-            for res in fallback_order:
-                if res in resolution_groups:
-                    return self.select_best_magnet(magnets, preference=res)
-            
+            pool = []
+            for res in ('1080P', '720P', '4K', '480P'):
+                pool.extend(resolution_groups.get(res, []))
+            pool.extend(resolution_groups.get('Unknown', []))
+            target_group = pool
+
+        if not target_group:
             # 最后选文件最大的（通常质量最高）
             return max(magnets, key=lambda x: x.get('size_bytes', 0))
 
@@ -1995,9 +2412,35 @@ class JavBusScraper:
         if with_subtitle:
             # 有字幕的情况下，选择文件最大的 (优先画质)
             return max(with_subtitle, key=lambda x: x.get('size_bytes', 0))
-        
+
         # 没有字幕，选择文件最大的
         return max(target_group, key=lambda x: x.get('size_bytes', 0))
+
+    def select_alive_magnet(
+        self,
+        magnets: List[Dict],
+        preference: str = '1080P',
+        *,
+        check_seeds: bool = True,
+    ) -> Optional[Dict]:
+        """选种，并在首选是「死种」时换成确实有做种的候选。
+
+        2026-11-11 实测（AVOP-069）：按画质/体积选中的 `AVOP-069.HD高清`
+        在 tracker 上**只有 1 个做种**，qB 拿到后永远停在 `metaDL`，
+        下载根本没开始；同号里做种最多的 `AVOP-069.mp4`（**12 个做种**）
+        当天就能下完。所以选种必须把「能不能下下来」纳入判断。
+
+        tracker 查不到（网络不通 / tracker 不支持 scrape）时**保持原行为** ——
+        评估是加分项，不是必需项。
+        """
+        best = self.select_best_magnet(magnets, preference=preference)
+        if not best or not check_seeds:
+            return best
+        try:
+            return magnet_availability.pick_alive_candidate(magnets, best)
+        except Exception as exc:
+            logger.warning("选种做种数评估失败，保持原选择: %s", type(exc).__name__)
+            return best
 
     def backfill_actress_from_jellyfin(self, actress_name: str) -> bool:
         """
@@ -2217,14 +2660,8 @@ class JavBusScraper:
             # 尝试根据图片 URL 构造 Referer，或者是 BaseURL
             headers['Referer'] = self.base_url + '/'
             
-            # 默认校验 SSL；仅当显式开启 SCRAPER_ALLOW_INSECURE_IMAGE_FETCH 时，
-            # 才在证书错误时降级为不校验（与 organizer.py 的图床策略一致）。
-            try:
-                response = self.session.get(url, stream=True, timeout=20, headers=headers, verify=True)
-            except requests.exceptions.SSLError:
-                if not getattr(config, "SCRAPER_ALLOW_INSECURE_IMAGE_FETCH", False):
-                    raise
-                response = self.session.get(url, stream=True, timeout=20, headers=headers, verify=False)
+            # [FIX] 禁用 SSL 验证，防止某些图床证书问题
+            response = self.session.get(url, stream=True, timeout=20, headers=headers, verify=False)
             response.raise_for_status()
             return response
         except Exception as e:

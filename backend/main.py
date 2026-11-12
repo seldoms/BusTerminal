@@ -47,6 +47,10 @@ from common_utils import (
 from scraper import scraper
 from netflav_scraper import netflav_scraper
 import qb_api
+import subtitle_fetcher
+import scrape_schedule
+from scrape_budget import SUBSCRIPTION_LIST_THROTTLE_KEY, DetailThrottle
+import javbus_path
 import auth_service
 from security import hash_password, verify_password
 from database import db, config_encryption_enabled, display_value_for_log, parse_int_value, sanitize_lifecycle_payload
@@ -97,7 +101,9 @@ from movie_download_service import (
 )
 from pending_download_service import (
     PENDING_DOWNLOAD_SCAN_INTERVAL_SECONDS,
+    PENDING_NO_MAGNET_MAX_ATTEMPTS,
     get_pending_next_retry_at,
+    is_pending_exhausted,
     select_due_pending_downloads,
     summarize_pending_downloads,
 )
@@ -115,8 +121,17 @@ from qb_param_utils import (
     normalize_qb_save_path as normalize_qb_save_path_for_roots,
 )
 from qb_service import QBService
+from qb_quiet_hours import (
+    MAX_WINDOWS as QB_QUIET_HOURS_MAX_WINDOWS,
+    QuietHoursController,
+    load_config as load_quiet_hours_config,
+    normalize_windows as normalize_quiet_hours_windows,
+    public_view as quiet_hours_public_view,
+    save_config as save_quiet_hours_config,
+)
 from scraper_url_utils import (
     get_scraper_allowed_hosts as get_scraper_allowed_hosts_from_sources,
+    normalize_netflav_subscription_url as normalize_netflav_subscription_url_for_sources,
     normalize_scraper_page_url as normalize_scraper_page_url_for_sources,
     normalize_scraper_url as normalize_scraper_url_for_sources,
     normalize_subscription_source_url as normalize_subscription_source_url_with_external,
@@ -312,6 +327,7 @@ def get_discovery_service() -> DiscoveryService:
             evaluate_download_permission=evaluate_download_permission,
             queue_download_if_absent=queue_download_if_absent,
             schedule_image_cache_warmup=schedule_image_cache_warmup,
+            task_registry=task_registry,
         )
     return _discovery_service
 
@@ -441,6 +457,19 @@ def normalize_external_subscription_url(raw_url: Any) -> Optional[str]:
         all_domains=getattr(scraper, "all_domains", []),
     )
 
+def normalize_netflav_subscription_url(raw_url: Any) -> Optional[str]:
+    """netflav 站点的订阅来源 URL（`/all?actress=<名字>`）。
+
+    netflav 不在 JavBus 的 SSRF 白名单里，但库里确实有直接指向 netflav 的
+    外部订阅（2026-11-07 实测 3 条）。它们走 netflav 做「发现」，所以在订阅
+    这一层单独放行 —— 但只认 netflav 自己的域名 + `/all` 路径 + `actress` 参数。
+    """
+    try:
+        hosts = netflav_scraper.allowed_hosts()
+    except Exception:
+        hosts = []
+    return normalize_netflav_subscription_url_for_sources(raw_url, allowed_hosts=hosts)
+
 def normalize_resolved_subscription_url(raw_url: Any) -> Optional[str]:
     value = str(raw_url or "").strip()
     internal_url = normalize_internal_subscription_url(value)
@@ -449,7 +478,10 @@ def normalize_resolved_subscription_url(raw_url: Any) -> Optional[str]:
     legacy_internal_url = normalize_legacy_internal_subscription_alias(value)
     if legacy_internal_url:
         return legacy_internal_url
-    return normalize_external_subscription_url(value)
+    external_url = normalize_external_subscription_url(value)
+    if external_url:
+        return external_url
+    return normalize_netflav_subscription_url(value)
 
 def resolve_actress_subscription_url(
     actress_id: Optional[str],
@@ -925,7 +957,7 @@ def start_background_task(
 async def get_jable_hot_movies(
     page: int = Query(1, ge=1, description="椤电爜"),
     limit: int = Query(30, ge=10, le=60, description="姣忛〉鏁伴噺"),
-    sort_by: str = Query("video_viewed", pattern="^(video_viewed|video_viewed_month|video_viewed_week|video_viewed_today|post_date)$", description="鎺掑簭鏂瑰紡"),
+    sort_by: str = Query("video_viewed", enum=["video_viewed", "video_viewed_month", "video_viewed_week", "video_viewed_today", "post_date"], description="鎺掑簭鏂瑰紡"),
     force_refresh: bool = Query(False, description="鏄惁寮哄埗鍒锋柊"),
     translate: bool = Query(True, description="鏄惁缈昏瘧鏍囬")
 ):
@@ -968,7 +1000,7 @@ async def search_jable_magnet(
         return {"success": False, "message": "invalid_video_id", "magnets": []}
 
     try:
-        detail_url = f"{scraper.base_url}/{safe_video_id}"
+        detail_url = javbus_path.build_detail_url(scraper.base_url, safe_video_id)
         movie_detail = await run_in_threadpool(
             scraper.get_movie_detail,
             detail_url,
@@ -1043,6 +1075,13 @@ async def get_discovery_sources():
     discovery_svc = await run_in_threadpool(get_discovery_service)
     sources = await run_in_threadpool(discovery_svc.get_sources)
     return {"success": True, "data": sources}
+
+@app.get("/api/discovery/scrape-budget")
+async def get_discovery_scrape_budget():
+    """各站点今天的列表页抓取额度（每站每天 10 次，订阅详情抓取不计入）。"""
+    discovery_svc = await run_in_threadpool(get_discovery_service)
+    snapshot = await run_in_threadpool(discovery_svc.scrape_budget.snapshot)
+    return {"success": True, "data": snapshot}
 
 @app.get("/api/discovery/movies/raw")
 async def get_discovery_movies(
@@ -1229,14 +1268,29 @@ def fetch_dashboard_metrics() -> Dict[str, Any]:
         db._release_connection(conn)
 
 
-def refresh_dashboard_metrics_snapshot() -> Dict[str, Any]:
+def refresh_dashboard_metrics_snapshot(expected_updated_at: Optional[float] = None) -> Dict[str, Any]:
+    """Refresh the dashboard snapshot.
+
+    When ``expected_updated_at`` is given the write is a compare-and-set: the
+    snapshot is only persisted if the cached row still carries that timestamp.
+    A background refresh scheduled on a stale snapshot must never overwrite a
+    newer snapshot written while the refresh was running (lost update).
+    """
     metrics = fetch_dashboard_metrics()
-    db.set_cache(DASHBOARD_METRICS_CACHE_KEY, metrics)
-    db.record_cache_event(DASHBOARD_METRICS_CACHE_KEY, "refresh_success")
+    if expected_updated_at is None:
+        db.set_cache(DASHBOARD_METRICS_CACHE_KEY, metrics)
+        db.record_cache_event(DASHBOARD_METRICS_CACHE_KEY, "refresh_success")
+        return metrics
+
+    if db.set_cache_if_unchanged(DASHBOARD_METRICS_CACHE_KEY, metrics, expected_updated_at):
+        db.record_cache_event(DASHBOARD_METRICS_CACHE_KEY, "refresh_success")
+    else:
+        # Someone else already refreshed it: keep the newer snapshot.
+        db.record_cache_event(DASHBOARD_METRICS_CACHE_KEY, "refresh_superseded")
     return metrics
 
 
-def schedule_dashboard_metrics_refresh() -> bool:
+def schedule_dashboard_metrics_refresh(expected_updated_at: Optional[float] = None) -> bool:
     global dashboard_metrics_refresh_scheduled
     with dashboard_metrics_refresh_lock:
         if dashboard_metrics_refresh_scheduled:
@@ -1247,7 +1301,7 @@ def schedule_dashboard_metrics_refresh() -> bool:
     def refresh_once():
         global dashboard_metrics_refresh_scheduled
         try:
-            refresh_dashboard_metrics_snapshot()
+            refresh_dashboard_metrics_snapshot(expected_updated_at)
         except Exception as e:
             db.record_cache_event(DASHBOARD_METRICS_CACHE_KEY, "refresh_failure")
             logger.warning("Dashboard metrics background refresh failed: %s", safe_exception_label(e))
@@ -1270,7 +1324,9 @@ def get_dashboard_metrics_snapshot() -> Dict[str, Any]:
     if cached and isinstance(cached.get("value"), dict):
         if get_cache_age_seconds(cached) >= DASHBOARD_METRICS_CACHE_TTL:
             db.record_cache_event(DASHBOARD_METRICS_CACHE_KEY, "stale")
-            schedule_dashboard_metrics_refresh()
+            # Pass the observed timestamp so the background refresh only writes
+            # back if this snapshot is still the current one.
+            schedule_dashboard_metrics_refresh(cached.get("updated_at"))
         return cached["value"]
 
     # A cold cache should still be exact. Serialize the first calculation so
@@ -1641,7 +1697,10 @@ async def proxy_jellyfin_image(
             movie = db.get_movie(movie_id) or {}
             cover_url = movie.get("cover")
             if not cover_url:
-                detail = scraper.get_movie_detail(f"{scraper.base_url.rstrip('/')}/{movie_id}", perform_translate=False)
+                detail = scraper.get_movie_detail(
+                    javbus_path.build_detail_url(scraper.base_url, movie_id),
+                    perform_translate=False,
+                )
                 cover_url = (detail or {}).get("cover")
 
             if not cover_url:
@@ -1943,7 +2002,7 @@ async def startup_event():
             feed_preload_refresh_loop,
             description="Refresh home/subtitle/HD/discovery feed caches periodically so pages open instantly with fresh data",
             category="crawler",
-            interval=f"{config.FEED_PRELOAD_REFRESH_SECONDS}s",
+            interval=f"{int(scrape_schedule.interval_seconds('feed_preload'))}s",
         )
 
     # 下载闭环（下发 → 做种 → 投递）必须常驻，**不能**被 BUS_TERMINAL_DISABLE_STARTUP_TASKS
@@ -1965,6 +2024,18 @@ async def startup_event():
         category="download",
         interval=f"{config.DOWNLOAD_DISPATCHER_INTERVAL}s",
     )
+
+    # 半夜静默模式与 groom 同理放常驻区：被 DISABLE_STARTUP_TASKS 挡掉的话，
+    # 用户配好的时间段到点不会暂停，凌晨照样满速上传，等于功能没上线。
+    # 是否真的启用由 config 表里的 qb_quiet_hours.enabled 决定，循环空转没有副作用。
+    if config.QB_QUIET_HOURS_TICK_ENABLED:
+        start_background_task(
+            "qb_quiet_hours_loop",
+            qb_quiet_hours_loop,
+            description="Pause qBittorrent upload/download inside user-defined quiet-hours windows",
+            category="download",
+            interval=f"{config.QB_QUIET_HOURS_TICK_SECONDS}s",
+        )
 
     # 辅助服务（备份 / 守卫）的健康看护同样必须常驻：NAS 上没有别的监控，
     # 它被那个开关挡住的话，备份静默失败就永远没人知道。
@@ -1994,7 +2065,7 @@ async def startup_event():
             gfriends_avatar_sync_loop,
             description="Backfill missing actress avatars from the gfriends public index",
             category="maintenance",
-            interval=f"{config.GFRIENDS_AVATAR_SYNC_INTERVAL_SECONDS}s per batch",
+            interval=f"{int(scrape_schedule.interval_seconds('actress_avatar'))}s per batch",
         )
 
     # 入库自愈巡检：默认关闭（AMANE_HEAL_ENABLED）。与 groom 同理放在常驻区——
@@ -2074,7 +2145,7 @@ async def startup_event():
         auto_crawl_subscriptions,
         description="Check subscriptions periodically and discover new movies",
         category="crawler",
-        interval=f"{config.SUBSCRIPTION_CHECK_INTERVAL}s",
+        interval=f"{int(scrape_schedule.interval_seconds('subscription_cycle'))}s",
     )
 
     # groom_torrents_task 与 download_dispatcher_task 已在本函数前面、
@@ -2090,7 +2161,7 @@ async def startup_event():
         actress_metadata_backfill_loop,
         description="Low-frequency Netflav actress metadata completion for actors discovered during downloads",
         category="crawler",
-        interval=f"{ACTRESS_METADATA_RETRY_SECONDS}s",
+        interval=f"{int(scrape_schedule.interval_seconds('actress_metadata'))}s retry cooldown",
     )
 
     start_background_task(
@@ -2120,13 +2191,18 @@ async def startup_event():
         interval=f"{config.DISK_MONITOR_INTERVAL}s",
     )
 
-    start_background_task(
-        "daily_maintenance_task",
-        daily_maintenance_task,
-        description="Daily maintenance for navigation, categories, actresses, and Jellyfin metadata",
-        category="maintenance",
-        interval="daily 02:00",
-    )
+    # daily_maintenance_task 已摘除：它唯一的动作就是 force_refresh 预热一遍 feed，
+    # 而 feed_preload_refresh_loop 现在每 4 小时（设置页可改）就做同样的事，
+    # 每天再补一次只是多打站点、多吃配额。任务实现保留在 maintenance_service 里
+    # 供手工触发，但不再进启动列表。
+    #
+    # start_background_task(
+    #     "daily_maintenance_task",
+    #     daily_maintenance_task,
+    #     description="Daily maintenance for navigation, categories, actresses, and Jellyfin metadata",
+    #     category="maintenance",
+    #     interval="daily 02:00",
+    # )
 
     start_background_task(
         "jellyfin_automation_sync_task",
@@ -2153,7 +2229,7 @@ async def startup_event():
         jable_hot_auto_task_loop,
         description="Discover Jable hot movies and enqueue them when enabled",
         category="crawler",
-        interval="daily 22:00",
+        interval="daily " + " / ".join(scrape_schedule.time_slots("jable_hot")),
     )
 
     start_background_task(
@@ -2179,6 +2255,14 @@ async def startup_event():
         description="Auto-delete watched-once non-favorite movies daily (Jellyfin+files+torrents, keep DB)",
         category="maintenance",
         interval="hourly check; runs at auto_delete_run_hour when enabled",
+    )
+
+    start_background_task(
+        "subtitle_backfill_loop",
+        subtitle_backfill_loop,
+        description="Auto-fetch external subtitles for local movies that still lack one",
+        category="maintenance",
+        interval=f"0~{int(scrape_schedule.interval_seconds('subtitle_backfill'))}s random; {config.SUBTITLE_BACKFILL_BATCH} movies per round",
     )
 
     logger.info("Background tasks started")
@@ -2221,7 +2305,8 @@ def get_today_start_ts() -> float:
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     return today.timestamp()
 
-ACTRESS_METADATA_RETRY_SECONDS = 6 * 3600
+# 兜底值；运行时以 scrape_schedule「女优元数据回填」（默认 7 天）为准
+ACTRESS_METADATA_RETRY_SECONDS = 7 * 86400
 ACTRESS_METADATA_BATCH_SIZE = 10
 ACTRESS_METADATA_MAX_ATTEMPTS = 5
 _actress_service: Optional[ActressService] = None
@@ -2378,6 +2463,9 @@ def get_download_service() -> DownloadService:
                 movie_id
             ),
             is_blocked=lambda *texts: get_onboarding_service().is_blocked(*texts),
+            # 会话失效时让 groom 能重建 SID：qB 容器一重启旧 SID 全废，
+            # 没有这个回调就只能等下一次 get_status 把缓存冲掉，中间整段空转。
+            invalidate_qb_session=lambda: get_qb_service().invalidate_session(),
         )
     return _download_service
 
@@ -2406,6 +2494,19 @@ def get_subscription_service() -> SubscriptionService:
             queue_download_if_absent=queue_download_if_absent,
             safe_exception_label=safe_exception_label,
             display_value_for_log=display_value_for_log,
+            scrape_budget=get_discovery_service().scrape_budget,
+            # 订阅检索的间隔取「0 ~ 设置值」的随机数（默认 3 分钟），实际值来自
+            # scrape_schedule，设置页保存即生效。详情走订阅服务内部的短间隔
+            # （默认 0~6 秒，见 subscription_service._inline_detail_gap）。
+            list_throttle=DetailThrottle(
+                db,
+                logger,
+                stop_event=stop_event,
+                config_key=SUBSCRIPTION_LIST_THROTTLE_KEY,
+                schedule_key="subscription_list_gap",
+            ),
+            # 新源：JavBus 女优页解析不出时，用 netflav 只做「发现」
+            netflav_scraper=netflav_scraper,
         )
     return _subscription_service
 
@@ -2480,6 +2581,8 @@ def get_maintenance_service() -> MaintenanceService:
             queue_download_if_absent=queue_download_if_absent,
             select_due_pending_downloads=select_due_pending_downloads,
             summarize_pending_downloads=summarize_pending_downloads,
+            is_pending_exhausted=is_pending_exhausted,
+            no_magnet_max_attempts=PENDING_NO_MAGNET_MAX_ATTEMPTS,
             preload_information_flow_cache=preload_information_flow_cache,
             is_safe_cache_file=is_safe_cache_file,
         )
@@ -2519,13 +2622,22 @@ def download_dispatcher_task():
 def process_subscription(sub: dict, force_refresh: bool = False) -> dict:
     return get_subscription_service().process_subscription(sub, force_refresh=force_refresh)
 
+def _subscription_check_key(sub: dict) -> float:
+    """最久没检查的排前面：站点日配额有限时按这个顺序轮转，避免尾部订阅永远轮不到。"""
+    try:
+        return float(sub.get("last_checked_at") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def auto_crawl_subscriptions():
     # Background task: crawl subscriptions independently so one source cannot block the rest.
     while not stop_event.is_set():
+        cycle_started = time.time()
         try:
             if not GLOBAL_SUBSCRIPTION_PAUSED:
                 logger.info("Starting subscription crawl cycle")
-                subscriptions = db.get_subscriptions()
+                subscriptions = sorted(db.get_subscriptions(), key=_subscription_check_key)
                 summary = {
                     "subscription_count": len(subscriptions),
                     "processed_count": 0,
@@ -2534,7 +2646,7 @@ def auto_crawl_subscriptions():
                     "queued_count": 0,
                 }
 
-                for sub in subscriptions:
+                for index, sub in enumerate(subscriptions, start=1):
                     if stop_event.is_set():
                         break
                     try:
@@ -2549,6 +2661,12 @@ def auto_crawl_subscriptions():
                             "Subscription source failed; continuing remaining sources: %s",
                             safe_exception_label(exc),
                         )
+                    # 订阅检索每条按 0~3 分钟随机节流，几百条订阅要跑好几个小时；
+                    # 不打心跳的话任务卡片会一直停在启动时刻，看起来像卡死。
+                    task_registry.mark_heartbeat(
+                        "auto_crawl_subscriptions",
+                        summary={**summary, "progress": f"{index}/{len(subscriptions)}"},
+                    )
 
                 if summary["failed_count"]:
                     task_registry.mark_error(
@@ -2558,7 +2676,7 @@ def auto_crawl_subscriptions():
                 else:
                     task_registry.mark_success("auto_crawl_subscriptions", summary=summary)
 
-                logger.info("Subscription crawl cycle finished; next run in %s hours", config.SUBSCRIPTION_CHECK_INTERVAL // 3600)
+                logger.info("Subscription crawl cycle finished")
             else:
                 logger.info("Subscription crawl is paused; waiting for resume conditions")
                 task_registry.mark_success(
@@ -2570,7 +2688,13 @@ def auto_crawl_subscriptions():
             logger.error("Subscription crawl loop failed: %s", safe_exception_label(e))
             task_registry.mark_error("auto_crawl_subscriptions", e)
 
-        stop_event.wait(config.SUBSCRIPTION_CHECK_INTERVAL)
+        # 周期从设置页读（默认 12 小时），每轮重新取以便保存即生效。
+        # 一轮本身就按「每条 0~3 分钟随机」在跑，几百条订阅可能跑好几个小时；
+        # 这里只补足「本轮耗时不足周期」的部分，跑超了就直接开始下一轮，
+        # 节奏仍由 DetailThrottle 兜着，不会加速打站点。
+        cycle_interval = scrape_schedule.interval_seconds("subscription_cycle")
+        remaining = cycle_interval - (time.time() - cycle_started)
+        stop_event.wait(max(0, remaining))
 
 def run_auto_delete_watched_once(reason_tag: str = "auto_delete") -> Dict[str, Any]:
     """执行一次已看片自动删除：删 Jellyfin 条目 + 磁盘文件 + qBittorrent 种子，保留 DB 记录。
@@ -2635,6 +2759,13 @@ def auto_delete_watched_daily_task():
                     "auto_delete_watched_daily",
                     summary={"reason_tag": "daily_retention", "date": today},
                 )
+            else:
+                # 默认关闭时这个任务整天都不满足触发条件，不打心跳的话
+                # last_heartbeat_at 会永远停在启动时刻，看起来像卡死。
+                task_registry.mark_heartbeat(
+                    "auto_delete_watched_daily",
+                    summary={"enabled": enabled, "mode": mode, "run_hour": run_hour, "last_run_date": last_run_date},
+                )
         except Exception as exc:
             logger.error("Auto-delete daily loop error: %s", safe_exception_label(exc))
             task_registry.mark_error("auto_delete_watched_daily", exc)
@@ -2677,6 +2808,78 @@ def amane_heal_loop():
             )
         except Exception as e:
             logger.error("amane heal loop failed: %s", safe_exception_label(e))
+        stop_event.wait(interval)
+
+
+_quiet_hours_controller: Optional[QuietHoursController] = None
+
+
+def _quiet_hours_pause_or_resume(pause: bool, hashes):
+    """静默模式的 qB 出口：pause=True 暂停，False 恢复。失败抛异常让 controller 记账。"""
+    service = get_qb_service()
+    session, base_url = service.get_session()
+    if not session:
+        raise RuntimeError("qb_unavailable")
+    fn = service.qb_api.pause_torrents if pause else service.qb_api.resume_torrents
+    return bool(fn(session, base_url, list(hashes)))
+
+
+def _quiet_hours_list_torrents() -> List[Dict[str, Any]]:
+    service = get_qb_service()
+    session, base_url = service.get_session()
+    if not session:
+        raise RuntimeError("qb_unavailable")
+    try:
+        return service.qb_api.get_torrents(session, base_url) or []
+    except qb_api.QBSessionExpired:
+        # 会话过期：冲掉缓存让下个 tick 重新登录。本 tick 按「qB 不可达」处理，
+        # controller 会保留自己暂停过的集合，不会误把种子恢复回去。
+        service.invalidate_session()
+        raise RuntimeError("qb_session_expired")
+
+
+def get_quiet_hours_controller() -> QuietHoursController:
+    global _quiet_hours_controller
+    if _quiet_hours_controller is None:
+        _quiet_hours_controller = QuietHoursController(
+            db=db,
+            list_torrents=_quiet_hours_list_torrents,
+            pause=lambda hashes: _quiet_hours_pause_or_resume(True, hashes),
+            resume=lambda hashes: _quiet_hours_pause_or_resume(False, hashes),
+        )
+    return _quiet_hours_controller
+
+
+def qb_quiet_hours_loop():
+    """半夜静默模式巡检。
+
+    每 `QB_QUIET_HOURS_TICK_SECONDS`（默认 30 秒）判一次「现在是否落在用户配的
+    某个时间段里」，只在状态翻转时动 qB——把仍在传输的种子整体暂停，出时间段
+    再恢复自己暂停的那批。判定逻辑与暂停集管理都在 qb_quiet_hours.py。
+
+    为什么不交给 qB 自带调度：它只有一组 from/to，配不了「多个时间段」。
+    """
+    interval = max(10, int(config.QB_QUIET_HOURS_TICK_SECONDS))
+    controller = get_quiet_hours_controller()
+    while not stop_event.is_set():
+        try:
+            report = controller.tick()
+            if report.get("actions") or report.get("errors"):
+                logger.info(
+                    "quiet hours: active=%s paused=%s actions=%s",
+                    report.get("active"),
+                    report.get("paused"),
+                    ",".join(report.get("actions") or []) or "-",
+                )
+            if report.get("errors"):
+                # qB 暂时不可达是常态（重启/发布窗口），降级成 warning 别刷 error
+                logger.warning("quiet hours qB side errors: %s", ",".join(report["errors"]))
+            task_registry.mark_success(
+                "qb_quiet_hours_loop",
+                summary={"active": report.get("active"), "paused": report.get("paused")},
+            )
+        except Exception as e:
+            logger.error("quiet hours tick failed: %s", safe_exception_label(e))
         stop_event.wait(interval)
 
 
@@ -2740,6 +2943,23 @@ def junk_sweep_loop():
                 )
             except Exception as e:
                 logger.error("junk sweep loop failed: %s", safe_exception_label(e))
+
+            # 队列对账复用这一档（默认 6 小时），不另起循环、不新增频率配置。
+            # 只改 download_queue 状态，qB 删种是独立的运维动作。
+            try:
+                reconcile_service = get_download_service()
+                reconcile_service.get_qb_session = get_qb_session
+                reconcile_report = reconcile_service.reconcile_download_queue_once()
+                if reconcile_report.get("applied"):
+                    logger.warning(
+                        "download queue reconcile: absent=%s dead=%s applied=%s scanned=%s",
+                        reconcile_report.get("cancelled_absent"),
+                        reconcile_report.get("cancelled_dead"),
+                        reconcile_report.get("applied"),
+                        reconcile_report.get("scanned"),
+                    )
+            except Exception as e:
+                logger.error("download queue reconcile failed: %s", safe_exception_label(e))
         elif torrent_report.get("deleted"):
             logger.warning(
                 "junk torrents deleted: %s", torrent_report.get("deleted")
@@ -2761,7 +2981,6 @@ def gfriends_avatar_sync_loop():
     """
     from gfriends_sync import GfriendsAvatarSyncer
 
-    interval = config.GFRIENDS_AVATAR_SYNC_INTERVAL_SECONDS
     limit = config.GFRIENDS_AVATAR_SYNC_BATCH
     # 命中率实测只有 2~15%，所以每轮要扫远多于 limit 条才能补到量；
     # randomize 避开「永远只扫存储顺序前 N 行」的饥饿（否则循环空转、零产出）。
@@ -2786,7 +3005,8 @@ def gfriends_avatar_sync_loop():
         except Exception as e:
             # 拉索引失败（网络/上游改版）不该中断循环，下一轮继续
             logger.error("gfriends avatar loop failed: %s", safe_exception_label(e))
-        stop_event.wait(interval)
+        # 每轮重新读（默认 7 天），设置页保存后立刻按新周期走
+        stop_event.wait(scrape_schedule.interval_seconds("actress_avatar"))
 
 
 def translation_backfill_loop():
@@ -2836,9 +3056,11 @@ def feed_preload_refresh_loop():
     周期性把首页/字幕/高清/发现 feed 重新预热一遍：打开页面既是新数据、又命中本地缓存秒开。
 
     只写本地 feed 缓存（不触发下载、Jellyfin 写入等副作用），所以不受
-    BUS_TERMINAL_DISABLE_STARTUP_TASKS 限制，单独由 FEED_PRELOAD_REFRESH_* 控制。
+    BUS_TERMINAL_DISABLE_STARTUP_TASKS 限制。周期从设置页读（默认 4 小时），
+    用户明确口径是「首页、榜单 4 小时一次就足够」。
     """
     while not stop_event.is_set():
+        interval = scrape_schedule.interval_seconds("feed_preload")
         try:
             preload_information_flow_cache(
                 max_pages=INFORMATION_FLOW_PRELOAD_PAGES,
@@ -2848,14 +3070,14 @@ def feed_preload_refresh_loop():
                 "feed_preload_refresh_loop",
                 summary={
                     "max_pages": INFORMATION_FLOW_PRELOAD_PAGES,
-                    "interval_s": config.FEED_PRELOAD_REFRESH_SECONDS,
+                    "interval_s": int(interval),
                 },
             )
         except Exception as e:
             logger.error("Feed preload refresh failed: %s", safe_exception_label(e))
             task_registry.mark_error("feed_preload_refresh_loop", e)
 
-        stop_event.wait(config.FEED_PRELOAD_REFRESH_SECONDS)
+        stop_event.wait(interval)
 
 # Configure authentication (added before CORS so CORS stays the outermost middleware).
 app.add_middleware(auth_service.AuthMiddleware)
@@ -3159,6 +3381,7 @@ def normalize_subscription_source_url(raw_url: Any) -> Optional[str]:
     return normalize_subscription_source_url_with_external(
         raw_url,
         normalize_external_url=normalize_scraper_url,
+        normalize_netflav_url=normalize_netflav_subscription_url,
     )
 
 
@@ -3871,6 +4094,23 @@ async def heal_one_amane_movie(movie_id: str, number: Optional[str] = None):
     return {"success": bool(data.get("healed")), "data": data}
 
 
+@app.get("/api/config/schedule")
+async def get_scrape_schedule():
+    """抓取 / 刷新节奏（设置页「抓取节奏」）。"""
+    return {"success": True, "data": await run_in_threadpool(scrape_schedule.snapshot)}
+
+
+@app.post("/api/config/schedule")
+async def update_scrape_schedule(payload: Dict[str, Any]):
+    """保存节奏配置。只覆盖提交上来的项，保存即生效（各循环每轮重新读取）。"""
+    errors = scrape_schedule.validate_payload(payload)
+    if errors:
+        return {"success": False, "message": "invalid_scrape_schedule", "errors": errors}
+    data = await run_in_threadpool(scrape_schedule.save_payload, payload)
+    logger.info("Scrape schedule updated via settings page")
+    return {"success": True, "data": data}
+
+
 @app.get("/api/config/system")
 async def get_system_config():
     return {"success": True, "data": await run_in_threadpool(get_system_config_payload)}
@@ -4399,6 +4639,58 @@ async def filter_qb_jav_files():
     return await run_in_threadpool(sync_qb_service_runtime_dependencies().filter_jav_files)
 
 
+@app.get("/api/qb/quiet-hours")
+async def get_qb_quiet_hours():
+    """半夜静默模式：读当前配置 + 实时状态（此刻是否静默中、下次几点切换）。
+
+    静默期间只暂停「本功能自己暂停的」种子，退出时间段后原样恢复；
+    用户手动恢复的种子不会被重新按回去（见 qb_quiet_hours.QuietHoursController）。
+    """
+    def run_read() -> Dict[str, Any]:
+        return quiet_hours_public_view(load_quiet_hours_config(db))
+
+    return {"success": True, "data": await run_in_threadpool(run_read)}
+
+
+@app.post("/api/qb/quiet-hours")
+async def update_qb_quiet_hours(payload: Dict[str, Any] = Body(default={})):
+    """保存静默时间段。enabled=false 会立刻解除静默（下一轮 tick 恢复种子）。"""
+    if not isinstance(payload, dict):
+        return {"success": False, "message": "invalid_payload"}
+
+    def run_save() -> Dict[str, Any]:
+        current = load_quiet_hours_config(db)
+        windows = normalize_quiet_hours_windows(payload.get("windows"))
+        # 只允许改「开关」和「时间段」；paused/released 是执行器的内部状态，
+        # 前端提交上来的值一律忽略，否则界面一刷新就会把暂停集覆盖掉。
+        data = {
+            "enabled": bool(payload.get("enabled")),
+            "windows": windows,
+            "paused": current.get("paused") or [],
+            "released": current.get("released") or [],
+            "last_change": current.get("last_change"),
+        }
+        saved = save_quiet_hours_config(db, data)
+        return quiet_hours_public_view(saved)
+
+    data = await run_in_threadpool(run_save)
+    logger.info(
+        "quiet hours updated: enabled=%s windows=%s",
+        data.get("enabled"),
+        len(data.get("windows") or []),
+    )
+    return {"success": True, "data": data}
+
+
+@app.post("/api/qb/quiet-hours/resume")
+async def resume_qb_quiet_hours():
+    """立即解除：把本功能暂停的种子全部恢复（不等到时间段结束）。"""
+    result = await run_in_threadpool(get_quiet_hours_controller().emergency_resume)
+    if not result.get("ok"):
+        return {"success": False, "message": "qb_resume_failed", "data": result}
+    return {"success": True, "data": result}
+
+
 @app.get("/api/navigation")
 async def get_navigation(force_refresh: bool = Query(False)):
     data = await run_in_threadpool(scraper.get_navigation, force_refresh)
@@ -4523,7 +4815,9 @@ async def select_magnet(
     if not magnets and (detail or {}).get("source") != "r18":
         detail = await run_in_threadpool(scraper.get_movie_detail, safe_url, False)
         magnets = detail.get("magnets") or []
-    best = await run_in_threadpool(scraper.select_best_magnet, magnets, preference)
+    # ⚠️ 用 select_alive_magnet：预览里显示的种子必须和真正会下的那个一致。
+    # 否则用户看到「3.92GB 720P」，实际下载时被换成另一个源，行为不可预期。
+    best = await run_in_threadpool(scraper.select_alive_magnet, magnets, preference)
     return {"success": True, "data": best, "magnets": magnets, "resolved_url": safe_url, "movie_id": resolved.get("movie_id")}
 
 
@@ -4603,7 +4897,12 @@ async def download_movie(payload: DownloadRequest):
             "magnet_count": 0,
         }
 
-    best = await run_in_threadpool(scraper.select_best_magnet, magnets, payload.preference)
+    # ⚠️ 用 select_alive_magnet（不是 select_best_magnet）：
+    # 画质/体积最优的那个候选可能是**死种**（tracker 上 0~1 个做种），
+    # qB 拿到后永远停在 metaDL，下载根本没开始。
+    # 2026-11-11 实测 AVOP-069：首选只有 1 个种（卡死），
+    # 换成做种最多的那个（12 个种）后当天就下完了。
+    best = await run_in_threadpool(scraper.select_alive_magnet, magnets, payload.preference)
     if not best:
         if movie_id:
             await run_in_threadpool(
@@ -4716,7 +5015,9 @@ async def download_magnet(payload: MagnetDownloadRequest):
 
 @app.get("/api/downloads/pending/stats")
 async def get_pending_download_stats(limit: int = Query(20, ge=1, le=100)):
-    rows = await run_in_threadpool(db.get_pending_downloads_list, 500)
+    # 统计必须基于**全量** pending：生产有 1637 条，只取 500 条会让
+    # pending_count / exhausted_count 全部失真（页面看到的数字对不上实际）。
+    rows = await run_in_threadpool(db.get_pending_downloads_list, 5000)
     summary = summarize_pending_downloads(rows)
     recent = rows[:limit]
     return {
@@ -5671,11 +5972,163 @@ def resolve_static_file_path(full_path: str) -> Optional[str]:
     return None
 
 
+class SubtitleFetchRequest(BaseModel):
+    movie_id: str = Field(..., min_length=1, max_length=64)
+    overwrite: bool = False
+
+
+def _subtitle_public_payload(result: Dict[str, Any]) -> Dict[str, Any]:
+    """只回传调用方需要的字段，内部诊断信息留日志。"""
+    return {
+        "status": result.get("status"),
+        "reason": result.get("reason"),
+        "query": result.get("query"),
+        "matched": result.get("matched"),
+        "language": result.get("language"),
+        "subtitle": result.get("subtitle"),
+        "source": result.get("source"),
+        "cues": result.get("cues"),
+    }
+
+
+def _fetch_subtitle_for_local_movie(
+    movie_id: str, overwrite: bool = False, session: Any = None
+) -> Dict[str, Any]:
+    """抓一部片的字幕并把结果落库，全程不抛异常。"""
+    local = db.get_local_file(movie_id)
+    if not local or not local.get("file_path"):
+        return {"status": "skipped", "reason": "local_file_not_found"}
+    movie = db.get_movie(movie_id) or {}
+    result = subtitle_fetcher.fetch_subtitle(
+        movie.get("code_norm") or "",
+        local["file_path"],
+        overwrite=overwrite,
+        session=session,
+    )
+    record = subtitle_fetcher.db_record_for_result(result)
+    db.update_local_file_subtitle(
+        movie_id,
+        record["status"],
+        language=record["language"],
+        source=record["source"],
+    )
+    return result
+
+
+
+@app.post("/api/subtitles/fetch")
+async def fetch_subtitle_endpoint(payload: SubtitleFetchRequest):
+    """按番号去字幕站取一条外挂字幕，落到影片同目录。
+
+    落盘即生效：Jellyfin 认 `<视频名>.<语言>.srt`，扫库后自动挂上。
+    """
+    result = await run_in_threadpool(
+        _fetch_subtitle_for_local_movie, payload.movie_id, payload.overwrite
+    )
+    return {"success": True, "data": _subtitle_public_payload(result)}
+
+
+def _run_subtitle_backfill_batch(limit: int) -> Dict[str, Any]:
+    """同步跑一批补抓。网页手动触发与后台自动循环共用。"""
+    candidates = db.get_local_files_missing_subtitle(limit)
+    # 整批复用一个 session：复用 TLS 连接能明显减少 Cloudflare 随机断连。
+    session = subtitle_fetcher.build_session()
+    results = []
+    for row in candidates:
+        result = _fetch_subtitle_for_local_movie(row.get("movie_id"), False, session)
+        results.append(
+            {
+                "movie_id": row.get("movie_id"),
+                "code": row.get("code_norm"),
+                **_subtitle_public_payload(result),
+            }
+        )
+    summary: Dict[str, int] = {}
+    for item in results:
+        key = str(item.get("status"))
+        summary[key] = summary.get(key, 0) + 1
+    return {"attempted": len(results), "summary": summary, "items": results}
+
+
+@app.post("/api/subtitles/backfill")
+async def backfill_subtitles(
+    limit: int = Query(5, ge=1, le=50),
+):
+    """给还没字幕的本地片补抓一批（限速串行，别把字幕站打烦）。"""
+    data = await run_in_threadpool(_run_subtitle_backfill_batch, limit)
+    return {"success": True, "data": data}
+
+
+def subtitle_backfill_loop():
+    """自动给「还没字幕」的本地片补抓，新片入库后不用人工点「补抓字幕」。
+
+    频次刻意压低：一轮最多 `SUBTITLE_BACKFILL_BATCH` 部、串行 1.2s 间隔；
+    候选查询本身带分级冷却（not_found/invalid 7 天、error 6 小时，见
+    `db.get_local_files_missing_subtitle`），所以稳态下没有新片就是 0 请求。
+    开关 `subtitle_auto_fetch_enabled`（config 表，默认开）可随时关掉。
+    """
+    while not stop_event.is_set():
+        try:
+            if not get_bool_config("subtitle_auto_fetch_enabled", True):
+                task_registry.mark_heartbeat(
+                    "subtitle_backfill_loop", summary={"enabled": False}
+                )
+            else:
+                data = _run_subtitle_backfill_batch(config.SUBTITLE_BACKFILL_BATCH)
+                if data["attempted"]:
+                    logger.info(
+                        "Subtitle auto backfill: attempted=%s summary=%s",
+                        data["attempted"],
+                        data["summary"],
+                    )
+                task_registry.mark_success(
+                    "subtitle_backfill_loop",
+                    summary={"attempted": data["attempted"], "summary": data["summary"]},
+                )
+        except Exception as exc:
+            logger.error("Subtitle auto backfill loop error: %s", safe_exception_label(exc))
+            task_registry.mark_error("subtitle_backfill_loop", exc)
+
+        # 设置页可改（默认 3 分钟），实际间隔取 0 ~ 该值的随机数。
+        stop_event.wait(scrape_schedule.random_delay_seconds("subtitle_backfill"))
+
+
+@app.get("/api/subtitles/coverage")
+async def subtitle_coverage():
+    summary = await run_in_threadpool(db.get_subtitle_status_summary)
+    total = sum(summary.values())
+    with_subtitle = int(summary.get("ok", 0))
+    # 路径失效的片既不算「有字幕」也不该混进「还缺字幕」——它们要的是修路径，不是再抓一次
+    path_missing = int(summary.get("path_missing", 0))
+    return {
+        "success": True,
+        "data": {
+            "total_local_files": total,
+            "with_subtitle": with_subtitle,
+            "path_missing": path_missing,
+            "without_subtitle": max(total - with_subtitle, 0),
+            "by_status": summary,
+        },
+    }
+
+
+_NON_SPA_PROBE_PREFIXES = frozenset({"health", "healthz", "livez", "readyz"})
+
+
 @app.get("/{full_path:path}")
 async def spa_fallback(full_path: str):
     # Keep unknown API paths as API 404 instead of serving the frontend shell.
     if full_path.startswith("api/"):
         raise HTTPException(status_code=404, detail="API endpoint not found")
+
+    # 探针路径写错时**绝不能**落到 SPA：`/health/live` 会返回 200 + index.html，
+    # 任何监控/验收脚本都会把它当成「服务健康」（2026-11-04 实测，我自己的探针就中招了）。
+    # 真接口是 /api/health/live、/api/health/check、/api/health/deps。
+    if full_path.split("/", 1)[0].lower() in _NON_SPA_PROBE_PREFIXES:
+        raise HTTPException(
+            status_code=404,
+            detail="Not found. Health endpoints live under /api/health/{live|check|deps}",
+        )
 
     requested_path = resolve_static_file_path(full_path)
     if requested_path:

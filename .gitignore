@@ -90,9 +90,12 @@ pgdata/
 docker-compose*.bak_*
 docker-compose*.bak_before_*
 
-# 个人环境离线构建变通文件：内容已归档至 docs/personal-build-memo.md，
-# 根目录不再入库，避免新用户误以为这是受支持的构建路径（见 Issue #2）。
-Dockerfile.release
+# pytest 临时目录（--basetemp 指定，避免 Windows 清临时目录崩 WinError 448）
+.pytest-tmp/
+
+# pytest 临时目录（本机 --basetemp 指定的项目内路径）
+.tmp_pytest/
+.tmp_probe/
 
 # ── 公开仓库追加：文档资源与前端构建配置必须入库 ──
 # 上面的 *.png / *.jpg 是为忽略封面缓存而设的宽泛规则，会连带排除文档截图，
@@ -100,6 +103,3 @@ Dockerfile.release
 !docs/images/*.png
 !docs/images/*.jpg
 !frontend/.env.production
-
-# pytest 临时目录（--basetemp 指定，避免 Windows 清临时目录崩 WinError 448）
-.pytest-tmp/
