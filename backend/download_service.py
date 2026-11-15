@@ -50,6 +50,8 @@ class DownloadService:
         is_blocked: Optional[Callable[..., Dict[str, Any]]] = None,
         invalidate_qb_session: Optional[Callable[[], None]] = None,
         delivery_path_probe: Optional[Callable[[str], bool]] = None,
+        # 静默窗口查询（qb_quiet_hours.is_active_now）。None = 不启用，保持老行为。
+        is_quiet_now: Optional[Callable[[], bool]] = None,
     ):
         self.db = db
         self.qb_api = qb_api
@@ -76,6 +78,7 @@ class DownloadService:
         self.is_blocked = is_blocked
         self.invalidate_qb_session = invalidate_qb_session
         self.delivery_path_probe = delivery_path_probe
+        self.is_quiet_now = is_quiet_now
         # 投递后回查落位的上限：同设备（storage 内两个目录）relocate 是 rename，
         # 秒级完成；留足余量给跨设备/大目录的极端情况。
         self.delivery_verify_timeout_seconds = 60.0
@@ -85,6 +88,28 @@ class DownloadService:
         self.post_add_metadata_timeout_seconds = 30.0
         self.post_add_metadata_poll_seconds = 2.0
         self._dispatcher_last_warn = 0.0
+
+    def _quiet_active(self) -> bool:
+        """此刻是否处于 qB 静默窗口内（周末全天策略落地处）。
+
+        静默期三件事一起停：新下载不再入队、dispatcher 不再往 qB 加种、
+        groom 不再投递/搬文件。第三件尤其关键 —— groom 把「已完成 + 已暂停」
+        视作做种时限达成，若不拦，静默一暂停种子就会触发一串 relocate，
+        大文件搬运几分钟，反而比不静默更吵。
+        """
+        # getattr 兜底：有些老测试用 __new__ 手工拼 service，没有这个属性
+        probe = getattr(self, "is_quiet_now", None)
+        if not probe:
+            return False
+        try:
+            return bool(probe())
+        except Exception as exc:
+            # 闸门自身出错时放行，与屏蔽词闸门同一口径
+            label = getattr(self, "safe_exception_label", None) or (lambda e: type(e).__name__)
+            logger = getattr(self, "logger", None)
+            if logger is not None:
+                logger.warning("Quiet hours gate failed: %s", label(exc))
+            return False
 
     def _notify_download_completed(self, movie_id: Optional[str], torrent: Dict) -> bool:
         """下载完成钩子：交给 amane 侧入库（方案 C 下 BusTerminal 不碰文件）。
@@ -383,6 +408,11 @@ class DownloadService:
         warnings = []
         presence: Dict[str, Any] = {}
 
+        # qB 静默窗口（如「周末全天」）：静默期一个 qB 任务都不开。
+        # 放在所有闸门最前面，命中后下面的 amane / qB / 磁盘检查全都不会跑。
+        if self._quiet_active():
+            denied.append("qb_quiet_hours")
+
         # 全链路屏蔽词闸门：放在最前面，纯内存判断，命中就直接拒，
         # 不去打 amane / qB / 库。手动下载、订阅、发现流、自动化都走这一个闸门。
         blocked = self._check_block_keyword(movie_id, title, source_url)
@@ -448,7 +478,8 @@ class DownloadService:
         }
         if blocked.get("blocked"):
             payload["blocked_keyword"] = blocked.get("keyword")
-        if movie_id and not allowed:
+        # 静默期被挡是策略预期、不是异常，不往生命周期事件表里灌「拒绝下载」
+        if movie_id and not allowed and "qb_quiet_hours" not in denied:
             self.db.record_lifecycle_event(
                 movie_id,
                 "download_permission_denied",
@@ -760,6 +791,16 @@ class DownloadService:
     ) -> None:
         filter_torrent_files = filter_torrent_files or self.filter_jav_torrent_files
         while not self.stop_event.is_set():
+            # 静默期整轮跳过：暂停种子会被误判成「做种时限达成」而触发 relocate，
+            # 大文件搬运是周末最大的噪音源。仍然 mark_success，别让健康看板误报卡死。
+            if self._quiet_active():
+                self.task_registry.mark_success(
+                    "groom_torrents_task",
+                    summary={"quiet_hours": True, "torrent_count": 0},
+                )
+                if self.stop_event.wait(self.config.GROOM_TASK_INTERVAL):
+                    break
+                continue
             torrent_count = 0
             delivered_count = 0
             downloaded_count = 0
@@ -1034,6 +1075,17 @@ class DownloadService:
 
     def download_dispatcher_task(self) -> None:
         while not self.stop_event.is_set():
+            # 静默期不再往 qB 加种（add_magnet 后 apply_post_add_file_policy 会
+            # 读文件+恢复下载，与暂停执行器来回打架）。pending 原样留着，
+            # 出窗口后第一轮自动继续，不需要人工补单。
+            if self._quiet_active():
+                self.task_registry.mark_success(
+                    "download_dispatcher_task",
+                    summary={"quiet_hours": True, "pending_count": 0, "qb_connected": False},
+                )
+                if self.stop_event.wait(self.config.DOWNLOAD_DISPATCHER_INTERVAL):
+                    break
+                continue
             pending_count = 0
             submitted_count = 0
             failed_count = 0

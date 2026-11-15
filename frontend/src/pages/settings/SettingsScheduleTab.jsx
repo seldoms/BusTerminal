@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Clock, RotateCcw, Save } from 'lucide-react';
+import { Clock, Plus, RotateCcw, Save, X } from 'lucide-react';
 import { getScrapeSchedule, saveScrapeSchedule } from '../../api';
 import { useToast } from '../../components/Toast';
 
@@ -141,15 +141,45 @@ export default function SettingsScheduleTab() {
                                 </div>
                                 <div className="schedule-control">
                                     {item.kind === 'times' ? (
-                                        <input
-                                            type="text"
-                                            className="settings-input schedule-times-input"
-                                            value={timesDraft[item.key] ?? ''}
-                                            onChange={(e) =>
-                                                setTimesDraft((prev) => ({ ...prev, [item.key]: e.target.value }))
-                                            }
-                                            placeholder="08:00, 18:00"
-                                        />
+                                        (() => {
+                                            const times = (timesDraft[item.key] || '').split(/[,，\s]+/);
+                                            const writeTimes = (next) =>
+                                                setTimesDraft((prev) => ({ ...prev, [item.key]: next.join(', ') }));
+                                            return (
+                                                <div className="time-chip-list">
+                                                    {times.map((time, idx) => (
+                                                        <span className="time-chip" key={idx}>
+                                                            <input
+                                                                type="time"
+                                                                step="60"
+                                                                className="time-chip__input"
+                                                                value={time}
+                                                                onChange={(e) => {
+                                                                    const next = [...times];
+                                                                    next[idx] = e.target.value;
+                                                                    writeTimes(next);
+                                                                }}
+                                                            />
+                                                            <button
+                                                                type="button"
+                                                                className="time-chip__remove"
+                                                                aria-label="删除时间点"
+                                                                onClick={() => writeTimes(times.filter((_, i) => i !== idx))}
+                                                            >
+                                                                <X size={13} strokeWidth={1.5} />
+                                                            </button>
+                                                        </span>
+                                                    ))}
+                                                    <button
+                                                        type="button"
+                                                        className="time-chip__add"
+                                                        onClick={() => writeTimes([...times, ''])}
+                                                    >
+                                                        <Plus size={13} strokeWidth={1.5} /> 加时间
+                                                    </button>
+                                                </div>
+                                            );
+                                        })()
                                     ) : (
                                         <div className="schedule-interval">
                                             <input

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { ShieldAlert, RefreshCw, Loader2 } from 'lucide-react';
 import { getJellyfinLibraries, getApiErrorMessage, logSafeError } from '../../api';
+import SecretInput from './SecretInput';
 
 // 与后端 jellyfin_delete_guard 的确认短语保持一致
 const DELETE_ENABLE_PHRASE = 'DELETE_JELLYFIN_ITEMS';
@@ -93,8 +94,7 @@ export default function SettingsJellyfinTab({ sysConfig, handleSysChange }) {
                             <div className="form-row" style={{ marginTop: 10 }}>
                                 <div className="form-group flex-1">
                                     <label className="control-label">API Key 密钥</label>
-                                    <input
-                                        type="password"
+                                    <SecretInput
                                         className="settings-input"
                                         value={sysConfig.jellyfin_api_key || ''}
                                         onChange={(e) => handleSysChange('jellyfin_api_key', e.target.value)}

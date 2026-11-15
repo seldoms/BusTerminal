@@ -1,13 +1,24 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { getApiErrorMessage, logSafeError, movieApi } from '../../api';
+import SecretInput from './SecretInput';
 
 const formatNumber = (value) => (value == null ? '-' : Number(value).toLocaleString('zh-CN'));
+
+const STAGE_LABELS = {
+    queue: '入队', request: '发送', response: '返回',
+    write: '写入', skip: '拦下', error: '失败',
+};
 
 export default function SettingsTranslateTab({ sysConfig, handleSysChange }) {
     const [status, setStatus] = useState(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
+    const [logEntries, setLogEntries] = useState([]);
+    const [logCapacity, setLogCapacity] = useState(200);
+    const [logLoading, setLogLoading] = useState(false);
+    const [logError, setLogError] = useState('');
+    const [autoRefresh, setAutoRefresh] = useState(true);
 
     const loadStatus = useCallback(async () => {
         setLoading(true);
@@ -32,6 +43,32 @@ export default function SettingsTranslateTab({ sysConfig, handleSysChange }) {
         const timer = setInterval(loadStatus, 30000);
         return () => clearInterval(timer);
     }, [loadStatus]);
+
+    const loadLog = useCallback(async () => {
+        setLogLoading(true);
+        try {
+            const response = await movieApi.getTranslationLog(50);
+            if (response?.success && Array.isArray(response.data)) {
+                setLogEntries(response.data);
+                setLogCapacity(response.capacity || 200);
+                setLogError('');
+            } else {
+                setLogError(getApiErrorMessage(response, '读取调用明细失败'));
+            }
+        } catch (err) {
+            logSafeError('Translation log failed:', err);
+            setLogError(getApiErrorMessage(err, '读取调用明细失败'));
+        } finally {
+            setLogLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        loadLog();
+        if (!autoRefresh) return undefined;
+        const timer = setInterval(loadLog, 10000);
+        return () => clearInterval(timer);
+    }, [loadLog, autoRefresh]);
 
     const byYear = status?.by_year || [];
 
@@ -122,13 +159,16 @@ export default function SettingsTranslateTab({ sysConfig, handleSysChange }) {
                                 />
                             </div>
                             <div className="form-group">
-                                <label className="control-label">模型名</label>
+                                <label
+                                    className="control-label"
+                                    title="默认翻译方式为 Google 免费翻译（免Key）；若切换为本地 Ollama，建议使用 Qwen2.5-14B-Instruct-Abliterated-GGUF:latest 这类 14B Abliterated 模型；不要用 Qwen3.6-35B-A3B 系列，速度虽快但实测会删减、漏翻。"
+                                >模型名</label>
                                 <input
                                     type="text"
                                     className="settings-input"
                                     value={sysConfig.ollama_model || ''}
                                     onChange={(e) => handleSysChange('ollama_model', e.target.value)}
-                                    placeholder="qwen3.8:27b"
+                                    placeholder="Qwen2.5-14B-Instruct-Abliterated-GGUF:latest"
                                 />
                             </div>
                         </div>
@@ -147,8 +187,7 @@ export default function SettingsTranslateTab({ sysConfig, handleSysChange }) {
                             </div>
                             <div className="form-group">
                                 <label className="control-label">百度 Secret Key</label>
-                                <input
-                                    type="password"
+                                <SecretInput
                                     className="settings-input"
                                     value={sysConfig.baidu_secret || ''}
                                     onChange={(e) => handleSysChange('baidu_secret', e.target.value)}
@@ -157,6 +196,60 @@ export default function SettingsTranslateTab({ sysConfig, handleSysChange }) {
                             </div>
                         </div>
                     )}
+
+                    <h4 className="section-subheading">调用明细</h4>
+                    <div className="translation-log">
+                        <div className="translation-log__bar">
+                            <span className="translation-log__hint">
+                                最近 {logCapacity} 条 · 仅存内存，重启清空 · 含发送内容、模型原始返回与实际写库
+                            </span>
+                            <label className="translation-log__auto">
+                                <input
+                                    type="checkbox"
+                                    checked={autoRefresh}
+                                    onChange={(e) => setAutoRefresh(e.target.checked)}
+                                />
+                                自动刷新
+                            </label>
+                            <button type="button" className="btn btn-secondary" onClick={loadLog} disabled={logLoading}>
+                                <RefreshCw size={14} className={logLoading ? 'spin' : ''} /> 刷新
+                            </button>
+                        </div>
+                        {logError && <div className="translation-log__error">{logError}</div>}
+                        <div className="translation-log__list">
+                            {logEntries.length === 0 ? (
+                                <div className="translation-log__empty">
+                                    暂无调用记录；打开含日文标题的列表页或详情页会触发增量翻译。
+                                </div>
+                            ) : logEntries.map((entry) => (
+                                <div className="translation-log__entry" key={entry.id}>
+                                    <div className="translation-log__head">
+                                        <span className={`translation-log__stage translation-log__stage--${entry.stage}`}>
+                                            {STAGE_LABELS[entry.stage] || entry.stage}
+                                        </span>
+                                        <span className="translation-log__ts">
+                                            {new Date(entry.ts * 1000).toLocaleString('zh-CN', { hour12: false })}
+                                        </span>
+                                        {entry.source && <span>{entry.source}{entry.model ? ` · ${entry.model}` : ''}</span>}
+                                        {entry.duration_ms != null && <span>{entry.duration_ms} ms</span>}
+                                        {entry.note && <span className="translation-log__note">{entry.note}</span>}
+                                    </div>
+                                    {entry.request && (
+                                        <div className="translation-log__row"><span>发送</span><pre>{entry.request}</pre></div>
+                                    )}
+                                    {entry.response && (
+                                        <div className="translation-log__row"><span>返回</span><pre>{entry.response}</pre></div>
+                                    )}
+                                    {entry.written?.length > 0 && (
+                                        <div className="translation-log__row">
+                                            <span>写入</span>
+                                            <pre>{entry.written.map((item) => `${item.original}  →  ${item.translated}`).join('\n')}</pre>
+                                        </div>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>

@@ -10,8 +10,10 @@
 
 import json
 import logging
+import time
 import urllib.request
 
+import translation_log
 from translation_guard import TitleGuard, is_low_quality
 
 logger = logging.getLogger(__name__)
@@ -129,11 +131,46 @@ class OllamaTranslator:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
-            body = json.load(response)
+        sent_at = time.monotonic()
+        # 只记录请求正文，不记录 headers —— 网关后端可能带 Authorization
+        translation_log.record(
+            "request",
+            source="ollama",
+            model=self.model,
+            request=json.dumps(
+                {"model": payload["model"], "messages": payload["messages"],
+                 "options": payload["options"]},
+                ensure_ascii=False,
+            ),
+            note=f"POST {self.base_url}/api/chat · 发送 {len(payloads)} 条",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                body = json.load(response)
+        except Exception as exc:  # noqa: BLE001
+            translation_log.record(
+                "error",
+                source="ollama",
+                model=self.model,
+                duration_ms=int((time.monotonic() - sent_at) * 1000),
+                note=f"请求失败: {type(exc).__name__}",
+            )
+            raise
 
         content = (body.get("message") or {}).get("content") or ""
         lines = self._parse_translations(content, len(unique_texts))
+        translation_log.record(
+            "response",
+            source="ollama",
+            model=self.model,
+            response=content,
+            duration_ms=int((time.monotonic() - sent_at) * 1000),
+            note=(
+                f"原始返回 · 解析 {len(lines) if lines else 0}/{len(unique_texts)} 条"
+                f" · done_reason={body.get('done_reason') or '-'}"
+                f" · eval_count={body.get('eval_count') or '-'}"
+            ),
+        )
         if lines is None:
             # 对不上 → 二分重试：拆两半各试一次，比整批丢掉划算得多。
             if len(unique_texts) > 1 and _depth < MAX_BISECT_DEPTH:

@@ -1,6 +1,7 @@
 import React from 'react';
 import { Activity, CheckCircle2, AlertCircle } from 'lucide-react';
 import QbQuietHoursCard from './QbQuietHoursCard';
+import SecretInput from './SecretInput';
 
 export default function SettingsEngineTab({
     qbConfig,
@@ -54,8 +55,7 @@ export default function SettingsEngineTab({
                             </div>
                             <div className="form-group flex-1">
                                 <label className="control-label">密码</label>
-                                <input
-                                    type="password"
+                                <SecretInput
                                     className="settings-input"
                                     value={qbConfig.password || ''}
                                     onChange={(e) => handleQBChange('password', e.target.value)}

@@ -21,6 +21,7 @@ import {
     runAmaneIngest,
     confirmAmaneVisibility,
 } from '../../api';
+import SecretInput from './SecretInput';
 
 const STATUS_ICON = {
     ok: <CheckCircle2 size={15} color="var(--success, #16a34a)" />,
@@ -232,8 +233,7 @@ export default function SettingsMediaStackTab() {
                                         当前：{config.token_masked || '(未配置，除 /api/health 外全部端点都需要它)'}
                                     </span>
                                 </div>
-                                <input
-                                    type="password"
+                                <SecretInput
                                     className="settings-input"
                                     value={token}
                                     onChange={(e) => setToken(e.target.value)}

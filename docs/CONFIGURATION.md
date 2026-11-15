@@ -266,6 +266,65 @@ BusTerminal 本身是**调度与索引层**，自己不下载、不刮削、不�
 | `BUS_TERMINAL_LEGACY_ORGANIZER` | `false` | 旧版组织器实现（已不推荐） |
 | `JABLE_HOT_AUTO_DOWNLOAD` | `false` | 热榜自动下载，默认关闭 |
 
+### 6.9 qB 静默时段（含周末全天）
+
+运行时配置，存在 `config` 表的 `qb_quiet_hours` 键里。设置页「qBittorrent → 半夜静默模式」
+或直接 `POST /api/qb/quiet-hours` 修改，**保存立即生效**（不必等 30 秒巡检）。
+
+生产当前策略（2026-11-14 起）：**周六、周日 00:00–24:00 全天暂停 qB 上传与下载**。
+
+```json
+{
+  "enabled": true,
+  "windows": [
+    { "start": "00:00", "end": "00:00", "days": [6, 7], "all_day": true }
+  ]
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `enabled` | 总开关。关掉后下一轮巡检会恢复本功能暂停过的种子 |
+| `windows[].days` | ISO 星期，1=周一 … 7=周日；跨零点窗口指**开始日** |
+| `windows[].all_day` | `true` = 整天 00:00 → 次日 00:00，忽略 `start`/`end`。**不要**用 `00:00–23:59` 近似，中间那一分钟会先全量恢复再全量暂停，比不静默还吵 |
+| 普通窗口 | `start`/`end` 为 `HH:MM`，`end < start` 表示跨零点，区间左闭右开 `[start, end)` |
+
+静默期三道闸一起动作，不是降速：
+
+1. 暂停所有仍在传输/做种的种子（含 `stalledUP`），退出窗口只恢复「本功能自己暂停过的」；
+2. `evaluate_download_permission` 拒绝新下载入队，dispatcher 不再往 qB 加种（pending 原样留着，出窗口自动继续）；
+3. groom 整轮跳过 —— 它把「已完成 + 已暂停」当作做种时限达成，不拦会触发 relocate 搬大文件。
+
+几点必须知道：
+
+- **时区固定 `Asia/Shanghai`**，与容器 `TZ` 解耦，判定按北京墙钟。
+- **暂停期间做种计时也停**。qB 与 MoviePilot / PT 站共用，有 H&R / 分享率要求的站点请自行评估；
+  周末连续 48 小时全停是明确取舍，不是故障。
+- **临时放行**：`POST /api/qb/quiet-hours/resume`（页面「立即解除静默」）放行到**本窗口结束**，
+  窗口内不会再被按回去；想整个周末都放行就把 `enabled` 设为 `false`。
+- **周一 00:00 自动恢复**；`GET /api/qb/quiet-hours` 的 `state.next_change_at` 给出准确时刻，
+  连续两天的全天窗口不会在周日 00:00 出现假的恢复点。
+- 暂停集落在 `config` 表里，后端重启/重新部署不会丢；退出窗口时按这份名单恢复。
+- 巡检开关 `QB_QUIET_HOURS_TICK_ENABLED`（默认 `true`）、`QB_QUIET_HOURS_TICK_SECONDS`（默认 30，最小 10）。
+  ⚠️ **关掉巡检会让静默中的种子一直暂停**，非排障不要动。
+
+### 6.10 设置页交互约定（v2.24 起）
+
+10 个分类共用一套口径，往设置页加字段时照这个来，别再堆解释性文字：
+
+| 口径 | 落地方式 |
+| --- | --- |
+| 说明文字 | 完整内容只放 `title`（hover 看），视觉上收成一行。`SettingsPage.jsx` 用 MutationObserver 给 `.control-help-text / .card-subtitle / .toggle-help / .schedule-help / .control-hint / .slider-hint / .schedule-footnote` 自动补 title，新增说明无需手写 |
+| 敏感值 | 5 处密码 / API Key 统一用 `settings/SecretInput.jsx`，默认 `type=password`、可一键显隐；**留空仍表示保持原值** |
+| 时间点 | 抓取节奏的 `times` 用原生 `<input type="time" step="60">` 芯片组，内部仍以 `HH:MM, HH:MM` 字符串提交，后端按 `_TIME_SLOT` 校验；不要改回手填文本框 |
+| 控件宽度 | 数字 / 端口 / 时间等短字段 `field-sizing:content` 按内容定宽，长 URL、模型名占满所在列 |
+| 保存 | `sysConfig` 与已落库基线逐键比对，有改动才出底部保存条；「查看明细」列出真实键名，「放弃」回滚，保存成功回读覆盖 |
+| 主题 / 作用域 | 跟随全局 `data-theme`，设置页**只在 `.settings-hub-container` 内重定义同名变量**，不影响其他页面。视觉层是 `SettingsPage.unslop.css`，删掉 `SettingsPage.jsx` 里那行 import 即可回退 |
+
+⚠️ 原型 `.workbuddy/prototypes/settings-redesign.html` 里的「88 项 / 6 组一页」是设计稿：其中
+28 项后端没有入口，热门榜日/周/月与每日 01:00 刷新也没有对应配置键，**不要照抄成真实控件**。
+真实页保留 10 个已接线的分类，视觉与交互口径取自原型，但每一项都对应真实 API。
+
 ---
 
 ## 七、验证配置是否生效

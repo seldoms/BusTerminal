@@ -28,6 +28,8 @@ const DAYS = [
 const ALL_DAYS = DAYS.map((d) => d.value);
 
 const EMPTY_WINDOW = { start: '23:30', end: '07:00', days: ALL_DAYS };
+// 全天窗口：00:00 → 次日 00:00，后端按 days 判定生效日，不能用 00:00–23:59 近似。
+const WEEKEND_ALL_DAY = { start: '00:00', end: '00:00', days: [6, 7], all_day: true };
 
 const timeText = (value) => {
     const text = String(value || '').trim();
@@ -58,7 +60,9 @@ const daysText = (days) => {
         .join('、');
 };
 
-const windowText = (w) => `${timeText(w.start)} – ${timeText(w.end)} · ${daysText(w.days)}`;
+const windowText = (w) => (w.all_day
+    ? `全天 · ${daysText(w.days)}`
+    : `${timeText(w.start)} – ${timeText(w.end)} · ${daysText(w.days)}`);
 
 export default function QbQuietHoursCard() {
     const { showToast } = useToast();
@@ -139,12 +143,27 @@ export default function QbQuietHoursCard() {
         });
     };
 
-    const addWindow = () => {
+    const toggleAllDay = (index) => {
+        setDraft((prev) => ({
+            ...prev,
+            windows: prev.windows.map((w, i) => {
+                if (i !== index) return w;
+                if (w.all_day) {
+                    const timed = { ...w };
+                    delete timed.all_day;
+                    return { ...timed, start: '23:30', end: '07:00' };
+                }
+                return { ...w, all_day: true, start: '00:00', end: '00:00' };
+            }),
+        }));
+    };
+
+    const addWindow = (preset = EMPTY_WINDOW) => {
         if (draft.windows.length >= limits.max_windows) {
             showToast(`最多 ${limits.max_windows} 个时间段`, 'error');
             return;
         }
-        setDraft((prev) => ({ ...prev, windows: [...prev.windows, { ...EMPTY_WINDOW }] }));
+        setDraft((prev) => ({ ...prev, windows: [...prev.windows, { ...preset }] }));
     };
 
     const removeWindow = (index) => {
@@ -152,7 +171,9 @@ export default function QbQuietHoursCard() {
     };
 
     const handleSave = async () => {
-        const bad = draft.windows.find((w) => !w.start || !w.end || timeText(w.start) === timeText(w.end));
+        const bad = draft.windows.find(
+            (w) => !w.all_day && (!w.start || !w.end || timeText(w.start) === timeText(w.end)),
+        );
         if (bad) {
             showToast(`${windowText(bad)} —— 开始和结束不能相同`, 'error');
             return;
@@ -162,9 +183,10 @@ export default function QbQuietHoursCard() {
             const res = await movieApi.saveQBQuietHours({
                 enabled: draft.enabled,
                 windows: draft.windows.map((w) => ({
-                    start: timeText(w.start),
-                    end: timeText(w.end),
+                    start: w.all_day ? '00:00' : timeText(w.start),
+                    end: w.all_day ? '00:00' : timeText(w.end),
                     days: w.days,
+                    ...(w.all_day ? { all_day: true } : {}),
                 })),
             });
             if (res?.success) {
@@ -232,7 +254,8 @@ export default function QbQuietHoursCard() {
 
                 <div className="control-help-text" style={{ marginBottom: 14, lineHeight: 1.8 }}>
                     在下列时间段内<b>暂停 qBittorrent 的上传与下载</b>，出时间段自动恢复，用来压夜里的硬盘与风扇噪音。
-                    可以加多个时间段（最多 {limits.max_windows} 个），结束时间早于开始时间表示跨零点。
+                    可以加多个时间段（最多 {limits.max_windows} 个），结束时间早于开始时间表示跨零点；
+                    勾「全天」即 00:00–24:00 整日暂停。静默期同时停掉新下载入队与入库投递。
                     <br />
                     只恢复「静默模式自己暂停的」任务 —— 你手动暂停的不会被放出来；静默期间你手动恢复的任务，也不会被重新按回去。
                     <br />
@@ -267,21 +290,35 @@ export default function QbQuietHoursCard() {
                 {draft.windows.map((w, index) => (
                     <div className="quiet-hours-row" key={index}>
                         <div className="quiet-hours-times">
-                            <input
-                                type="time"
-                                className="settings-input quiet-hours-time"
-                                value={timeText(w.start)}
-                                onChange={(e) => updateWindow(index, { start: e.target.value })}
-                                aria-label="开始时间"
-                            />
-                            <span className="quiet-hours-dash">→</span>
-                            <input
-                                type="time"
-                                className="settings-input quiet-hours-time"
-                                value={timeText(w.end)}
-                                onChange={(e) => updateWindow(index, { end: e.target.value })}
-                                aria-label="结束时间"
-                            />
+                            {w.all_day ? (
+                                <span className="quiet-hours-allday-label">00:00 → 24:00</span>
+                            ) : (
+                                <>
+                                    <input
+                                        type="time"
+                                        className="settings-input quiet-hours-time"
+                                        value={timeText(w.start)}
+                                        onChange={(e) => updateWindow(index, { start: e.target.value })}
+                                        aria-label="开始时间"
+                                    />
+                                    <span className="quiet-hours-dash">→</span>
+                                    <input
+                                        type="time"
+                                        className="settings-input quiet-hours-time"
+                                        value={timeText(w.end)}
+                                        onChange={(e) => updateWindow(index, { end: e.target.value })}
+                                        aria-label="结束时间"
+                                    />
+                                </>
+                            )}
+                            <button
+                                type="button"
+                                className={`quiet-hours-allday-toggle ${w.all_day ? 'active' : ''}`}
+                                onClick={() => toggleAllDay(index)}
+                                title="整天 00:00–24:00"
+                            >
+                                全天
+                            </button>
                         </div>
                         <div className="quiet-hours-days">
                             {DAYS.map((day) => (
@@ -313,10 +350,19 @@ export default function QbQuietHoursCard() {
                     <button
                         type="button"
                         className="btn btn-secondary"
-                        onClick={addWindow}
+                        onClick={() => addWindow()}
                         disabled={loading || draft.windows.length >= limits.max_windows}
                     >
                         <Plus size={15} /> 添加时间段
+                    </button>
+                    <button
+                        type="button"
+                        className="btn btn-secondary"
+                        onClick={() => addWindow(WEEKEND_ALL_DAY)}
+                        disabled={loading || draft.windows.length >= limits.max_windows}
+                        title="周六、周日 00:00–24:00 全天暂停"
+                    >
+                        <Plus size={15} /> 周末全天
                     </button>
                     <button
                         type="button"

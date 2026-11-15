@@ -637,6 +637,38 @@ input:checked + .switch-slider:before {
     font-weight: 600;
 }
 
+.quiet-hours-allday-label {
+    min-width: 156px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-main);
+    font-size: 14px;
+}
+
+.quiet-hours-allday-toggle {
+    height: 30px;
+    padding: 0 10px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-light);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 12px;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.quiet-hours-allday-toggle:hover {
+    border-color: var(--brand);
+    color: var(--text-main);
+}
+
+.quiet-hours-allday-toggle.active {
+    background: var(--brand);
+    border-color: var(--brand);
+    color: var(--bg-dark);
+    font-weight: 600;
+}
+
 .quiet-hours-remove {
     margin-left: auto;
     padding: 6px 10px;

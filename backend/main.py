@@ -49,6 +49,7 @@ from netflav_scraper import netflav_scraper
 import qb_api
 import subtitle_fetcher
 import scrape_schedule
+import translation_log
 from scrape_budget import SUBSCRIPTION_LIST_THROTTLE_KEY, DetailThrottle
 import javbus_path
 import auth_service
@@ -124,6 +125,7 @@ from qb_service import QBService
 from qb_quiet_hours import (
     MAX_WINDOWS as QB_QUIET_HOURS_MAX_WINDOWS,
     QuietHoursController,
+    is_active_now as quiet_hours_is_active_now,
     load_config as load_quiet_hours_config,
     normalize_windows as normalize_quiet_hours_windows,
     public_view as quiet_hours_public_view,
@@ -2466,6 +2468,7 @@ def get_download_service() -> DownloadService:
             # 会话失效时让 groom 能重建 SID：qB 容器一重启旧 SID 全废，
             # 没有这个回调就只能等下一次 get_status 把缓存冲掉，中间整段空转。
             invalidate_qb_session=lambda: get_qb_service().invalidate_session(),
+            is_quiet_now=lambda: quiet_hours_is_active_now(db),
         )
     return _download_service
 
@@ -2815,13 +2818,46 @@ _quiet_hours_controller: Optional[QuietHoursController] = None
 
 
 def _quiet_hours_pause_or_resume(pause: bool, hashes):
-    """静默模式的 qB 出口：pause=True 暂停，False 恢复。失败抛异常让 controller 记账。"""
+    """静默模式的 qB 出口：pause=True 暂停，False 恢复。失败抛异常让 controller 记账。
+
+    周末全天静默一次要动 500+ 个种子（stalledUP 也在传输集里），把 40 字符的
+    hash 全拼进一个 POST form 有 20KB+，反代和 qB 都可能掐掉。分批下发。
+
+    部分批次失败时仍返回 True：让 controller 把整批记进 paused 集，出窗口时
+    一并 resume —— 宁可对一个本来就没暂停的种子多喊一次 resume，也不能漏掉
+    真正被暂停的种子，否则周末过后它会永远停在暂停态。
+    """
     service = get_qb_service()
     session, base_url = service.get_session()
     if not session:
         raise RuntimeError("qb_unavailable")
     fn = service.qb_api.pause_torrents if pause else service.qb_api.resume_torrents
-    return bool(fn(session, base_url, list(hashes)))
+    targets = [str(h) for h in (hashes or []) if h]
+    if not targets:
+        return False
+    batch_size = 100
+    ok_any = False
+    failed = 0
+    for index in range(0, len(targets), batch_size):
+        batch = targets[index:index + batch_size]
+        try:
+            if fn(session, base_url, batch):
+                ok_any = True
+            else:
+                failed += 1
+        except Exception as exc:
+            failed += 1
+            logger.warning(
+                "quiet hours %s batch failed: %s",
+                "pause" if pause else "resume", type(exc).__name__,
+            )
+    if failed:
+        logger.warning(
+            "quiet hours %s: %s/%s batches failed, keeping full paused set",
+            "pause" if pause else "resume", failed,
+            (len(targets) + batch_size - 1) // batch_size,
+        )
+    return ok_any
 
 
 def _quiet_hours_list_torrents() -> List[Dict[str, Any]]:
@@ -3487,6 +3523,19 @@ async def get_translation_status():
         "eta_days": round(pending_total / rate / 60 / 24, 1) if (pending_total and rate > 0) else None,
     }
     return {"success": True, "data": payload}
+
+
+@app.get("/api/translation/log")
+async def get_translation_log(limit: int = 50):
+    """翻译调用明细：最近 N 条（入队 / 请求 / 原始返回 / 写库）。
+
+    数据只在内存环形缓冲里，重启即清空；不走主日志，避免高频翻译把容器日志轮转冲掉。
+    """
+    return {
+        "success": True,
+        "data": translation_log.recent(limit),
+        "capacity": translation_log.MAX_ENTRIES,
+    }
 
 
 @app.get("/api/tasks/status")
@@ -4670,8 +4719,19 @@ async def update_qb_quiet_hours(payload: Dict[str, Any] = Body(default={})):
             "released": current.get("released") or [],
             "last_change": current.get("last_change"),
         }
-        saved = save_quiet_hours_config(db, data)
-        return quiet_hours_public_view(saved)
+        save_quiet_hours_config(db, data)
+        # 保存后立刻跑一轮，别让用户等下一个 30 秒巡检才安静下来。
+        # 失败不影响保存结果（下一轮巡检会自己补上）。
+        try:
+            report = get_quiet_hours_controller().tick()
+            logger.info(
+                "quiet hours immediate tick: active=%s paused=%s actions=%s",
+                report.get("active"), report.get("paused"),
+                ",".join(report.get("actions") or []) or "-",
+            )
+        except Exception as exc:
+            logger.warning("quiet hours immediate tick failed: %s", safe_exception_label(exc))
+        return quiet_hours_public_view(load_quiet_hours_config(db))
 
     data = await run_in_threadpool(run_save)
     logger.info(

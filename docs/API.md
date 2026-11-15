@@ -12,7 +12,7 @@ The service currently has no built-in authentication. Keep it on a trusted LAN o
 - `local-write`: changes BusTerminal's local database/cache/configuration; verify in an isolated test database.
 - `external-write`: may control qBittorrent/Jellyfin or enqueue real downloads; automated tests must mock the external service.
 
-Operations: 138 total; 74 read-only; 51 local-write; 13 external-write.
+Operations: 139 total; 75 read-only; 51 local-write; 13 external-write.
 
 ## Endpoints
 
@@ -153,6 +153,7 @@ Operations: 138 total; 74 read-only; 51 local-write; 13 external-write.
 | `GET` | `/api/tasks/external` | `read-only` | - | query:status, query:task_type, query:limit, query:offset | - | Get External Tasks |
 | `GET` | `/api/tasks/status` | `read-only` | - | - | - | Get Task Status |
 | `POST` | `/api/translate/batch` | `local-write` | - | - | required | Batch Translate |
+| `GET` | `/api/translation/log` | `read-only` | - | query:limit | - | Get Translation Log |
 | `GET` | `/api/translation/status` | `read-only` | - | - | - | Get Translation Status |
 | `POST` | `/api/webhooks/jellyfin` | `local-write` | - | - | required | Jellyfin Webhook Route |
 | `GET` | `/{full_path}` | `read-only` | - | path:full_path* | - | Spa Fallback |

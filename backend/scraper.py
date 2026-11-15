@@ -1,3 +1,4 @@
+import json
 import re
 import requests
 import hashlib
@@ -18,6 +19,7 @@ import config # Import config module
 from domain_router import DomainRouter
 from ollama_translator import OllamaTranslator
 from translation_guard import TitleGuard, is_name_only_title
+import translation_log
 import javbus_path
 import magnet_availability
 import page_guard
@@ -699,10 +701,23 @@ class JavBusScraper:
                         normalized = normalize_simplified_title(translated, original)
                         # 原文照抄（模型没翻出来）不入库，留给后续再试
                         if not normalized or normalized == original or is_bad_translation_text(normalized):
+                            translation_log.record(
+                                "skip",
+                                source="ollama",
+                                request=original,
+                                response=translated,
+                                note="原文照抄 / 异常译文，不入库",
+                            )
                             continue
                         translated_dict[original] = normalized
                         db.save_translation(original, normalized)
                         db.update_movie_titles_by_translation(original, normalized)
+                        translation_log.record(
+                            "write",
+                            source="ollama",
+                            written=[{"original": original, "translated": normalized}],
+                            note="写入 translations + 更新 movies.title",
+                        )
                         for index in pending_indices_by_text.pop(original, []):
                             results[index] = normalized
 
@@ -734,6 +749,12 @@ class JavBusScraper:
                     guard_maps[text] = {}
             # 原文 → 保护后的文本（各翻译源都按这个映射发请求）
             fallback_by_text = dict(zip(to_translate_texts, fallback_inputs))
+            translation_log.record(
+                "request",
+                source="fallback",
+                request=json.dumps(fallback_inputs, ensure_ascii=False),
+                note=f"兜底翻译源（百度 / Google）发送 {len(fallback_inputs)} 条 · 占位保护后",
+            )
 
             # 尝试通过百度翻译批量接口
             # 检查百度翻译是否被临时禁用
@@ -879,6 +900,13 @@ class JavBusScraper:
                         continue
                     translated_dict[orig] = restored
 
+            translation_log.record(
+                "response",
+                source="fallback",
+                response=json.dumps(translated_dict, ensure_ascii=False),
+                note=f"兜底翻译源返回 {len(translated_dict)} 条译文",
+            )
+
             # 4. 汇总结果并存入缓存
             translated_count = 0
             for orig, indices in pending_indices_by_text.items():
@@ -889,7 +917,21 @@ class JavBusScraper:
                         db.save_translation(orig, trans)
                         # [NEW] 联动更新：确保数据库中所有相关电影标题立即变中文
                         db.update_movie_titles_by_translation(orig, trans)
+                        translation_log.record(
+                            "write",
+                            source="fallback",
+                            written=[{"original": orig, "translated": trans}],
+                            note="写入 translations + 更新 movies.title（兜底译文）",
+                        )
                         translated_count += 1
+                    else:
+                        translation_log.record(
+                            "skip",
+                            source="fallback",
+                            request=orig,
+                            response=raw_trans,
+                            note="兜底译文与原文相同或异常，不入库",
+                        )
                     for index in indices:
                         results[index] = trans
                 else:
@@ -1011,6 +1053,13 @@ class JavBusScraper:
                 )
                 self._translation_worker.start()
 
+        if fresh:
+            translation_log.record(
+                "queue",
+                source="queue",
+                request=json.dumps(fresh, ensure_ascii=False),
+                note=f"入队 {len(fresh)} 条 · priority={priority}",
+            )
         self._translation_queue_event.set()
         return len(fresh)
 

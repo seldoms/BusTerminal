@@ -1,4 +1,5 @@
 import React from 'react';
+import SecretInput from './SecretInput';
 
 export default function SettingsNotifyTab({ sysConfig, handleSysChange }) {
     return (
@@ -57,8 +58,7 @@ export default function SettingsNotifyTab({ sysConfig, handleSysChange }) {
                                 </div>
                                 <div className="form-group flex-1">
                                     <label className="control-label">授权码 / 密码</label>
-                                    <input
-                                        type="password"
+                                    <SecretInput
                                         className="settings-input"
                                         value={sysConfig.email_pass || ''}
                                         onChange={(e) => handleSysChange('email_pass', e.target.value)}

@@ -3,7 +3,7 @@
 覆盖：时间窗口判定（跨零点 / 同日 / 星期过滤）、下次切换点、
 以及执行器在「进入窗口→用户手动恢复→窗口内新种子→退出窗口→重启恢复」这条链路上的行为。
 """
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import qb_quiet_hours as qh
 
@@ -261,3 +261,129 @@ def test_public_view_hides_hashes():
     assert view["state"]["next_change_action"] == "resume"
     assert "paused" not in view          # 不把 hash 列表暴露给前端
     assert view["max_windows"] == qh.MAX_WINDOWS
+
+
+# --------------------------------------------------------------------------- #
+# 周末全天策略（all_day 窗口）
+# --------------------------------------------------------------------------- #
+WEEKEND = qh.normalize_windows([{"all_day": True, "days": [6, 7]}])
+
+
+def test_normalize_all_day_window():
+    windows = qh.normalize_windows([
+        {"all_day": True, "days": [6, 7], "start": "13:00", "end": "14:00"},
+        {"start": "23:30", "end": "07:00"},
+        {"start": "00:00", "end": "00:00"},   # 没写 all_day，仍是无效窗口
+    ])
+    assert windows[0] == {
+        "start": "00:00", "end": "00:00", "days": [6, 7], "all_day": True,
+    }
+    assert len(windows) == 2
+    assert "all_day" not in windows[1]       # 老格式逐字不变，老前端/断言不受影响
+    assert qh.window_span_minutes(windows[0]) == 24 * 60
+
+
+def test_weekend_all_day_covers_full_48_hours():
+    """2026-11-14 周六、11-15 周日、11-16 周一：00:00 边界必须严丝合缝。"""
+    assert datetime(2026, 11, 14).isoweekday() == 6
+    probes = [
+        (datetime(2026, 11, 13, 23, 59), False),   # 周五夜里不静默
+        (datetime(2026, 11, 14, 0, 0), True),      # 周六 00:00 左闭
+        (datetime(2026, 11, 14, 12, 0), True),
+        (datetime(2026, 11, 15, 0, 0), True),      # 跨天不断档
+        (datetime(2026, 11, 15, 23, 59), True),
+        (datetime(2026, 11, 16, 0, 0), False),     # 周一 00:00 右开
+        (datetime(2026, 11, 16, 9, 0), False),
+    ]
+    for at, expected in probes:
+        assert qh.is_active(at, WEEKEND) is expected, at
+
+
+def test_weekend_all_day_next_change_skips_fake_boundary():
+    """周六全天 + 周日全天之间的 00:00 不是「恢复点」，不能报给用户。"""
+    assert qh.next_change(datetime(2026, 11, 13, 12, 0), WEEKEND) == datetime(2026, 11, 14, 0, 0)
+    assert qh.next_change(datetime(2026, 11, 14, 12, 0), WEEKEND) == datetime(2026, 11, 16, 0, 0)
+    assert qh.next_change(datetime(2026, 11, 15, 23, 0), WEEKEND) == datetime(2026, 11, 16, 0, 0)
+
+
+def test_aware_datetime_is_judged_in_beijing_time():
+    """判定与容器 TZ 解耦：UTC 周六 16:00 = 北京周日 00:00，仍在静默里。"""
+    utc_sunday_midnight = datetime(2026, 11, 14, 16, 0, tzinfo=timezone.utc)
+    assert qh._wall_clock(utc_sunday_midnight) == datetime(2026, 11, 15, 0, 0)
+    assert qh.is_active(utc_sunday_midnight, WEEKEND) is True
+    # UTC 周五 16:00 = 北京周六 00:00，刚好进入
+    assert qh.is_active(datetime(2026, 11, 13, 16, 0, tzinfo=timezone.utc), WEEKEND) is True
+    # UTC 周日 16:00 = 北京周一 00:00，已经退出
+    assert qh.is_active(datetime(2026, 11, 15, 16, 0, tzinfo=timezone.utc), WEEKEND) is False
+    assert qh.local_now().utcoffset() == timedelta(hours=8)
+
+
+def test_is_active_now_gate():
+    db = FakeDB({"enabled": True, "windows": [{"all_day": True, "days": [6, 7]}]})
+    assert qh.is_active_now(db, datetime(2026, 11, 14, 12, 0)) is True
+    assert qh.is_active_now(db, datetime(2026, 11, 16, 12, 0)) is False
+
+    disabled = FakeDB({"enabled": False, "windows": [{"all_day": True, "days": [6, 7]}]})
+    assert qh.is_active_now(disabled, datetime(2026, 11, 14, 12, 0)) is False
+
+    class BoomDB:
+        def get_config(self, key):
+            raise RuntimeError("db down")
+
+    # 闸门读失败必须放行，不能把整条下载链路卡死
+    assert qh.is_active_now(BoomDB(), datetime(2026, 11, 14, 12, 0)) is False
+
+
+def test_all_day_controller_pauses_and_resumes_on_monday():
+    now = {"at": datetime(2026, 11, 14, 12, 0)}   # 周六中午
+    db = FakeDB({"enabled": True, "windows": [{"all_day": True, "days": [6, 7]}]})
+    qb = FakeQB([
+        {"hash": "aaa", "state": "downloading"},
+        {"hash": "bbb", "state": "stalledUP"},
+        {"hash": "ccc", "state": "pausedUP"},
+    ])
+    ctl = make_controller(db, qb, now)
+
+    assert ctl.tick()["active"] is True
+    assert sorted(qb.pause_calls[0]) == ["aaa", "bbb"]
+
+    now["at"] = datetime(2026, 11, 15, 12, 0)     # 周日中午：不该恢复
+    assert ctl.tick()["active"] is True
+    assert qb.resume_calls == []
+
+    now["at"] = datetime(2026, 11, 16, 0, 0)      # 周一 00:00：恢复
+    report = ctl.tick()
+    assert report["active"] is False
+    assert qb.resume_calls == [["aaa", "bbb"]]
+    assert db.value["paused"] == []
+
+
+def test_emergency_resume_holds_until_window_ends():
+    """周末想临时放行：点「立即解除」后不该 30 秒又被按回去。"""
+    now = {"at": datetime(2026, 11, 14, 12, 0)}
+    db = FakeDB({"enabled": True, "windows": [{"all_day": True, "days": [6, 7]}]})
+    qb = FakeQB([
+        {"hash": "aaa", "state": "downloading"},
+        {"hash": "bbb", "state": "stalledUP"},
+    ])
+    ctl = make_controller(db, qb, now)
+    ctl.tick()
+    assert sorted(db.value["paused"]) == ["aaa", "bbb"]
+
+    assert ctl.emergency_resume() == {"ok": True, "resumed": 2}
+    assert db.value["paused"] == []
+    assert db.value["released"] == ["aaa", "bbb"]
+
+    # 仍在周六窗口内：不再重新暂停
+    calls_before = len(qb.pause_calls)
+    assert ctl.tick()["active"] is True
+    assert len(qb.pause_calls) == calls_before
+
+    # 周一 00:00 退出窗口：放行名单必须清空，否则下周末这两颗永远不被暂停
+    now["at"] = datetime(2026, 11, 16, 0, 0)
+    assert ctl.tick()["active"] is False
+    assert db.value["released"] == []
+
+    now["at"] = datetime(2026, 11, 21, 12, 0)     # 下周六：正常接管
+    assert ctl.tick()["active"] is True
+    assert sorted(db.value["paused"]) == ["aaa", "bbb"]

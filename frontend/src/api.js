@@ -455,6 +455,7 @@ export const movieApi = {
     getCacheStats: () => api.get('/api/cache/stats').then(r => r?.data ?? {}),
     // 翻译进度总览（已翻/待翻/队列/速率/游标）
     getTranslationStatus: () => api.get('/api/translation/status'),
+    getTranslationLog: (limit = 50) => api.get('/api/translation/log', { params: { limit } }),
     cleanupCache: () => api.post('/api/cache/cleanup'),
     invalidateCache: (data) => api.post('/api/cache/invalidate', data),
     warmupCache: (data = { scope: 'recent', limit: 80 }) => api.post('/api/cache/warmup', data),

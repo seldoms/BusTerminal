@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
     Sliders,
     Database,
@@ -11,9 +11,12 @@ import {
     RefreshCw,
     Layers,
     Ban,
-    Clock
+    Clock,
+    RotateCcw,
+    ListChecks
 } from 'lucide-react';
 import './SettingsPage.css';
+import './SettingsPage.unslop.css';
 import { useLayoutSettings } from '../layoutSettings';
 import { useToast } from '../components/Toast';
 import {
@@ -57,11 +60,21 @@ export default function SettingsPage() {
     const [activeTab, setActiveTab] = useState('layout');
     const [{ cardWidth }, setLayoutSettings] = useLayoutSettings();
     const { showToast } = useToast();
+    const hubRef = useRef(null);
 
-    // 系统配置
+    // 系统配置：savedSysConfig 是「已落库」的基线，用来算真实未保存项数
     const [sysConfig, setSysConfig] = useState({});
+    const [savedSysConfig, setSavedSysConfig] = useState({});
     const [loadingSys, setLoadingSys] = useState(true);
     const [savingSys, setSavingSys] = useState(false);
+    const [showDirtyDetail, setShowDirtyDetail] = useState(false);
+
+    const dirtyKeys = useMemo(() => {
+        const keys = new Set([...Object.keys(savedSysConfig), ...Object.keys(sysConfig)]);
+        return [...keys]
+            .filter((key) => JSON.stringify(savedSysConfig[key]) !== JSON.stringify(sysConfig[key]))
+            .sort();
+    }, [savedSysConfig, sysConfig]);
 
     // qBittorrent 配置
     const [qbConfig, setQbConfig] = useState({ url: '', username: '', password: '' });
@@ -82,7 +95,10 @@ export default function SettingsPage() {
         setLoadingSys(true);
         try {
             const data = await getSystemSettings();
-            if (data) setSysConfig(data);
+            if (data) {
+                setSysConfig(data);
+                setSavedSysConfig(data);
+            }
         } catch (err) {
             console.error('加载系统配置失败:', err);
             showToast('加载系统配置失败', 'error');
@@ -120,9 +136,45 @@ export default function SettingsPage() {
         fetchCacheStatsData();
     }, [loadSystemSettings, loadQBConfig, fetchCacheStatsData]);
 
+    // 说明文字只留在 tooltip：给 10 个 tab 里所有解释性文本补 title，
+    // 视觉层再收成一行 / 两行。用 MutationObserver 覆盖 tab 内部异步渲染的说明。
+    useEffect(() => {
+        const root = hubRef.current;
+        if (!root || typeof MutationObserver === 'undefined') return undefined;
+        const selector = [
+            '.control-help-text', '.card-subtitle', '.toggle-help', '.schedule-help',
+            '.control-hint', '.slider-hint', '.schedule-footnote'
+        ].join(',');
+        const decorate = (el) => {
+            if (!el) return;
+            // React 重渲染会重建 className，所以已处理过的节点也要补回收敛类
+            if (el.dataset.tipDone) {
+                el.classList.add('has-tooltip');
+                return;
+            }
+            el.dataset.tipDone = '1';
+            const text = (el.textContent || '').trim();
+            if (!text) return;
+            if (!el.title) el.title = text;
+            el.classList.add('has-tooltip');
+        };
+        const scan = () => root.querySelectorAll(selector).forEach(decorate);
+        scan();
+        const observer = new MutationObserver(scan);
+        observer.observe(root, { childList: true, subtree: true, characterData: true });
+        return () => observer.disconnect();
+        // 加载态返回的是另一个 DOM 分支，loadingSys 翻转后 ref 才指向真正的台账容器
+    }, [loadingSys]);
+
     // Handler: 修改系统 State
     const handleSysChange = (key, value) => {
         setSysConfig(prev => ({ ...prev, [key]: value }));
+    };
+
+    const handleDiscardSys = () => {
+        setSysConfig({ ...savedSysConfig });
+        setShowDirtyDetail(false);
+        showToast('已放弃未保存的改动');
     };
 
     // Handler: 保存系统配置
@@ -131,13 +183,17 @@ export default function SettingsPage() {
         try {
             const res = await saveSystemSettings(sysConfig);
             if (res && res.success !== false) {
-                showToast('系统设置已成功保存！', 'success');
+                showToast(dirtyKeys.length > 0 ? `已保存 ${dirtyKeys.length} 项设置` : '系统设置已保存', 'success');
                 // 回读校验：后端可能做了归一化（如剥掉主机末尾斜杠），
                 // 用回读值覆盖本地状态，界面上立刻就是真实生效值。
                 const saved = res?.data;
                 if (saved && typeof saved === 'object') {
                     setSysConfig(prev => ({ ...prev, ...saved }));
+                    setSavedSysConfig(prev => ({ ...prev, ...sysConfig, ...saved }));
+                } else {
+                    setSavedSysConfig({ ...sysConfig });
                 }
+                setShowDirtyDetail(false);
                 loadSystemSettings();
             } else {
                 showToast(res?.message || '保存设置失败', 'error');
@@ -274,19 +330,40 @@ export default function SettingsPage() {
     if (loadingSys) {
         return (
             <div className="container settings-hub-container" style={{ textAlign: 'center', paddingTop: 60 }}>
-                <RefreshCw className="spin" size={32} style={{ color: 'var(--brand)', marginBottom: 12 }} />
-                <p style={{ color: 'var(--text-secondary)' }}>正在加载系统设置中心...</p>
+                <RefreshCw className="spin" size={20} style={{ color: 'var(--muted)', marginBottom: 12 }} />
+                <p style={{ color: 'var(--text-secondary)' }}>正在读取配置台账…</p>
             </div>
         );
     }
 
     return (
-        <div className="container settings-hub-container">
-            {/* Main Dual Column Layout */}
+        <div className="container settings-hub-container" ref={hubRef}>
+            {/* 台账抬头：数字全部来自真实状态，不写死 */}
+            <div className="settings-masthead">
+                <div className="settings-masthead__id">
+                    <h1 className="settings-masthead__title">设置 · BusTerminal</h1>
+                    <span className="settings-masthead__meta">配置台账 / 本地生效</span>
+                </div>
+                <div className="settings-masthead__figures">
+                    <div className="settings-masthead__fig">
+                        <span className="settings-masthead__num">{CATEGORIES.length}</span>
+                        <span className="settings-masthead__cap">配置分类</span>
+                    </div>
+                    <div className="settings-masthead__fig">
+                        <span className="settings-masthead__num">{Object.keys(sysConfig).length}</span>
+                        <span className="settings-masthead__cap">已加载键</span>
+                    </div>
+                    <div className="settings-masthead__fig is-accent">
+                        <span className="settings-masthead__num">{dirtyKeys.length}</span>
+                        <span className="settings-masthead__cap">未保存</span>
+                    </div>
+                </div>
+            </div>
+
             <div className="settings-dual-layout">
-                {/* Left Sidebar Tab Navigation */}
+                {/* 01–10 索引导航，说明只留在 tooltip */}
                 <div className="settings-sidebar-nav">
-                    {CATEGORIES.map((cat) => {
+                    {CATEGORIES.map((cat, index) => {
                         const IconComponent = cat.icon;
                         const isActive = activeTab === cat.id;
                         return (
@@ -295,27 +372,28 @@ export default function SettingsPage() {
                                 className={`nav-item-btn ${isActive ? 'active' : ''}`}
                                 onClick={() => setActiveTab(cat.id)}
                                 type="button"
+                                title={cat.desc}
                             >
-                                <IconComponent size={18} />
-                                <span>{cat.label}</span>
+                                <span className="cfg-nav__idx">{String(index + 1).padStart(2, '0')}</span>
+                                <IconComponent size={16} strokeWidth={1.5} />
+                                <span className="cfg-nav__label">{cat.label}</span>
                             </button>
                         );
                     })}
-
+                    <div className="cfg-nav__rule" />
                     <div className="sidebar-save-wrapper">
                         <button
                             type="button"
-                            className="btn btn-primary sidebar-save-btn"
+                            className="btn sidebar-save-btn"
                             onClick={handleSaveSys}
                             disabled={savingSys}
                         >
-                            <Save size={15} />
-                            <span>{savingSys ? '保存中...' : '保存全部设置'}</span>
+                            <Save size={15} strokeWidth={1.5} />
+                            <span>{savingSys ? '保存中…' : '保存全部设置'}</span>
                         </button>
                     </div>
                 </div>
 
-                {/* Right Content Pane */}
                 <div className="settings-tab-content">
                     {activeTab === 'layout' && (
                         <SettingsLayoutTab
@@ -393,6 +471,48 @@ export default function SettingsPage() {
                     )}
                 </div>
             </div>
+
+            {/* 只在真的有未保存改动时出现；清单是实际会提交的键，不是设计稿数字 */}
+            {dirtyKeys.length > 0 && (
+                <div className="settings-dirty">
+                    {showDirtyDetail && (
+                        <div className="settings-dirty-bar__detail">
+                            <p className="settings-dirty-bar__note">
+                                以下 {dirtyKeys.length} 个键将随本次保存写入配置表，保存后回读校验：
+                            </p>
+                            <div className="settings-dirty-bar__keys">
+                                {dirtyKeys.map((key) => (
+                                    <span className="settings-dirty-bar__key" key={key}>{key}</span>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                    <div className="settings-dirty-bar">
+                        <span className="settings-dirty-bar__count">{dirtyKeys.length}</span>
+                        <span className="settings-dirty-bar__text">项未保存</span>
+                        <button
+                            type="button"
+                            className="btn btn-sm"
+                            onClick={() => setShowDirtyDetail((v) => !v)}
+                        >
+                            <ListChecks size={14} strokeWidth={1.5} />
+                            {showDirtyDetail ? '收起' : '查看明细'}
+                        </button>
+                        <span className="settings-dirty-bar__spacer" />
+                        <button type="button" className="btn btn-sm" onClick={handleDiscardSys}>
+                            <RotateCcw size={14} strokeWidth={1.5} /> 放弃
+                        </button>
+                        <button
+                            type="button"
+                            className="btn btn-primary btn-sm"
+                            onClick={handleSaveSys}
+                            disabled={savingSys}
+                        >
+                            <Save size={14} strokeWidth={1.5} /> {savingSys ? '保存中…' : '保存改动'}
+                        </button>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
